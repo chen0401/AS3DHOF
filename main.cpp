@@ -26,8 +26,8 @@ const float CST = 0.5f;			//HOF矩阵中不为0的列数与总列数之比的阈值
 
 const float FRT = 1.0;			//正反向光流阈值
 const float MFS = 4.0;			//光流大小阈值
-const int iStart = 109;			//起始帧
-const int iEnd = 134;			//结束帧
+const int iStart = 123;			//起始帧
+const int iEnd = 124;			//结束帧
 int CI = 0;						//当前帧序号
 
 const float AST = 0.015f;			//AHOF阈值
@@ -43,14 +43,26 @@ static int minH;				//H方向的起始坐标
 static int maxH;				//H方向的结束坐标(不包含该点）
 static int ROIW;				//ROI区域的W：maxW-minW
 static int ROIH;
+//【相机参数】
+const double b = 0.54;				//基线（单位m）
+const double f = 4.5;				//焦距(单位mm)  dx = 4.65μm
+const double fx = 963.5594;
+
+const int MLN = 7;
+const int MMN = 4;
 
 typedef cv::Vec<float, 5> Vec5f;	//5通道
+//typedef cv::Vec<float, 6> Vec6f;	//6通道
 IplImage * image = NULL;
 static int startH;					//图像Y方向的起始位置
-char *outDest = "../output/flow/0000000%03d.png";
+char *outDest = "../output/56/flow/0000000%03d.png";
 char *hofText = "../output/hof/%d-AS3DHOF-%d-%d.txt";
+
+char *dest = "../input/KITTI/56/image_00/data/0000000%03d.png";
+char *rightDest = "../input/KITTI/56/image_01/data/0000000%03d.png";
 char hofSrc[200];
 const bool ifSaveHOF = false;		//是否保存HOF数据
+char outSrc[200];
 
 //------------------------------------【方法声明】---------------------------------
 /*
@@ -188,6 +200,7 @@ const Mat flowMat			//光流矩阵
 vector<Point2i> &flowV		//保存异常光流的vector
 */
 void getAbnormalFlowByAS3DHOF(const Mat flowMat, vector<Point2i> &flowV);
+void judgeAS3DHOF(const int y,const int x,const int *AHOF,const vector<Point2i> *APvec, const int Alen, const int * SHOF, const vector<Point2i> *SPvec,const int Slen, vector<Point2i>&flowV);
 /*
 -功能：绘制箭头
 -输入：
@@ -242,20 +255,64 @@ const int y,				//区域起始坐标y
 const int x					//区域起始坐标x
 */
 void saveAS3DHOF2File(int const * AHOF, const int Alen, const int const * SHOF, const int Slen, const Mat TDHOF, const int y, const int x);
+/*
+-功能：计算左右图像的视差图
+-输入：
+		const IplImage *left		//左图
+		const IplImage *right		//右图
+-输出：
+		Mat & disparity				//视差图
+*/
+void calDisparity(const IplImage *left,const IplImage *right,Mat & disparity);
+/*
+-功能：MMM算法
+*/
+void MMM(IplImage * preImage,IplImage * curImage,IplImage * rightCurImage);
+/*
+-功能：结合视差矩阵和光流矩阵，将光流特征点分成N层
+-输入：
+		Mat disparity			//视差矩阵
+		Mat preFeaturesMat		//光流矩阵 左图k-1
+		Mat curFeaturesMat		//光流矩阵 左图k
+		int N					//层数
+-输出：
+		vector<Point2i>* preV	//层数组
+		vector<Point2i>* curP	//层数组
+*/
+void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat,vector<Point2i>* preV,vector<Point2i>* curP,int N);
+/*
+-功能：距离对应的层标
+-输入：
+		float dis		//距离
+-返回：
+		int				//所属层标
+*/
+int markDis(float dis);
+void multipleMotion(vector<Point2i>* preV, vector<Point2i> *curV, int Vlen, vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN]);
+void findMotion(vector<Point2i> preV, vector<Point2i> curV, vector<Point2i> *preMV, vector<Point2i> *curMV, int N);
+void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN], int CMI[][MMN]);
+int findClass(Mat &mat);
+void markClass(Mat &mat, int r, int y, int c);
 int main()
 {
-	IplImage *preImage, *curImage;
-	char *dest = "../input/data/0000000%03d.png";	//图片路径格式
+	IplImage *preImage, *curImage, *rightCurImage;
+	//char *dest = "../input/15/data/0000000%03d.png";	//图片路径格式
+	
 	char *curDes = "";
-	char preSrc[200], curSrc[200], outSrc[200];
+	char preSrc[200], curSrc[200], rightCurSrc[200];
 	//【加载数据集】
 	for (int i = iStart; i < iEnd; i++)
 	{
 		CI = i + 1;
+		sprintf_s(outSrc, outDest, i + 1);
+
 		sprintf_s(preSrc, dest, i);
 		sprintf_s(curSrc, dest, i + 1);
-		preImage = cvLoadImage(preSrc);
-		curImage = cvLoadImage(curSrc);
+		sprintf_s(rightCurSrc, rightDest, i + 1);
+
+		preImage = cvLoadImage(preSrc, CV_BGR2GRAY);				//左图：t-1时刻
+		curImage = cvLoadImage(curSrc, 0);				//左图：t时刻
+		rightCurImage = cvLoadImage(rightCurSrc, 0);	//右图：t时刻
 		image = curImage;
 		imageSize = cvGetSize(curImage);
 		//【将当前帧序号写入文件:hof/帧序列号-AS3DHOF-滑动窗口h-滑动窗口w.txt】
@@ -267,14 +324,13 @@ int main()
 			fprintf(fp, "T\n%d\n", CI);
 			fclose(fp);
 		}
-		AS3DHOF(preImage, curImage);
+		//AS3DHOF(preImage, curImage);
+		MMM(preImage, curImage, rightCurImage);
+		//cvSaveImage(outSrc, curImage);
 
-		sprintf_s(outSrc, outDest, i + 1);
-		cvSaveImage(outSrc, curImage);
-
-		cvShowImage("当前帧", curImage);
-		cvShowImage("前一帧", preImage);
-		cvShowImage("image", image);
+		//cvShowImage("当前帧", curImage);
+		//cvShowImage("前一帧", preImage);
+		//cvShowImage("image", image);
 
 		waitKey(1);
 	}
@@ -282,12 +338,14 @@ int main()
 	waitKey(0);
 	return 0;
 }
+//-----------------------------------------【方法定义】-------------------------------------------------
 void AS3DHOF(IplImage * preImage, IplImage *curImage)
 {
 	//【ROI区域参数】
 	minW = 0;
 	maxW = imageSize.width;
-	minH = (imageSize.height >> 1) - 10;
+	minH = (imageSize.height >> 1) - 40;
+	//minH = 0;
 	maxH = imageSize.height;
 	ROIW = maxW - minW;
 	ROIH = maxH - minH;
@@ -297,6 +355,7 @@ void AS3DHOF(IplImage * preImage, IplImage *curImage)
 	//【计算ROI区域的光流信息-第一次过滤：正反向光流过滤】
 	Mat preFeaturesMat, curFeaturesMat;
 	calOpticalFlow(preImage, curImage, preFeaturesMat, curFeaturesMat);
+	
 	//【第二次过滤：RANSAC过滤光流信息】
 	//Mat prePointMat, curPointMat;
 	//filterOpticalFlow(preFeaturesMat, curFeaturesMat, prePointMat, curPointMat);
@@ -314,6 +373,7 @@ void AS3DHOF(IplImage * preImage, IplImage *curImage)
 	cvResetImageROI(preImage);
 	cvResetImageROI(curImage);
 	drawFlow(curImage, flowMat);
+	//drawFlow(curImage, preFeaturesMat, curFeaturesMat);
 	drawFlow(curImage, abFlowVAS, flowMat);
 	drawWindow(curImage);
 }
@@ -323,10 +383,10 @@ void getFeaturesPointsSteps(const IplImage * image, CvPoint2D32f ** features, in
 	int H = ROIH;
 	int W = ROIW;
 	int i = 0, j = 0, ii = 0;
-	WNf = W / Wstep + 1;
-	HNf = H / Hstep + 1;
-	//wN = W %Wstep == 0 ? wN : wN + 1;
-	//hN = H %Hstep == 0 ? hN : hN + 1;
+	WNf = W / Wstep;
+	HNf = H / Hstep;
+	WNf = W %Wstep == 0 ? WNf : WNf + 1;
+	HNf = H %Hstep == 0 ? HNf : HNf + 1;
 	pointNum = WNf * HNf;
 	*features = new CvPoint2D32f[pointNum];
 	for (i = 0; i<H; i += Hstep)
@@ -353,7 +413,7 @@ void calOpticalFlow(IplImage * preImage, IplImage * curImage, Mat & prePointMat,
 	}
 	else
 	{
-		preGrayImage = preImage;
+		preGrayImage = cvCloneImage(preImage);
 	}
 	if (curImage->nChannels != 1)
 	{
@@ -361,7 +421,7 @@ void calOpticalFlow(IplImage * preImage, IplImage * curImage, Mat & prePointMat,
 	}
 	else
 	{
-		curGrayImage = curImage;
+		curGrayImage = cvCloneImage(curImage);
 	}
 	//*******************************************************
 	int pointNum = 0;
@@ -700,6 +760,157 @@ void getAbnormalFlowByAS3DHOF(const Mat flowMat, vector<Point2i>& flowV)
 			{
 				saveAS3DHOF2File(AHOF, Alen, SHOF, Slen, TDHOF, i, j);
 			}
+			int ASize = TDHOF.rows;
+			int SSize = TDHOF.cols;
+			int *A = new int[ASize]();
+			int *S = new int[SSize]();
+			int value = 0;
+			int ASum = 0, SSum = 0;
+			int noZeroNum = 0;
+			for (size_t m = 0; m < ASize; m++)
+			{
+				for (size_t n = 0; n < SSize; n++)
+				{
+					value = TDHOF.at<short int>(m, n);
+					if (value< 1) { continue; }
+					A[m] += value;
+					S[n] += value;
+					ASum += value;
+					SSum += value;
+					++noZeroNum;
+				}
+			}
+			float mean = ASum*1.0 / noZeroNum;
+			float var = 0.0;
+			for (size_t m = 0; m < ASize; m++)
+			{
+				for (size_t n = 0; n < SSize; n++)
+				{
+					value = TDHOF.at<short int>(m, n);
+					if (value< 1) { continue; }
+					var += pow(value-mean,2.0);
+				}
+			}
+			var = sqrt(var / noZeroNum);
+			cout << var << "\t";
+			if (var >= 2.5) 
+			{
+				for (size_t m = 0; m < ASize; m++)
+				{
+					for (size_t n = 0; n < SSize; n++)
+					{
+						vector <Point2i> p = TPVec[m][n];
+						int length = p.size();
+						for (size_t k = 0; k < length; k++)
+						{
+							flowV.push_back(Point2i(p[k].x + j, p[k].y + i));
+						}
+					}
+				}
+			}
+			//-----------------------------------------------------------------
+			//通过3DHOF计算AHOF、SHOF，舍弃掉在3DHOF中值为1、0的点
+			//int ASize = TDHOF.rows;
+			//int SSize = TDHOF.cols;
+			//int *A = new int[ASize]();
+			//int *S = new int[SSize]();
+			//int value = 0;
+			//int ASum = 0, SSum = 0;
+			//for (size_t m = 0; m < ASize; m++)
+			//{
+			//	for (size_t n = 0; n < SSize; n++)
+			//	{
+			//		value = TDHOF.at<short int>(m, n);
+			//		if (value< 2) { continue; }
+			//		A[m] += value;
+			//		S[n] += value;
+			//		ASum += value;
+			//		SSum += value;
+			//	}
+			//}
+			////int ASum = 0;
+			//for (size_t m = 0; m < ASize; m++)
+			//{
+			//	//cout << "CI:" << CI << "\t" << i << "\t" << j << "\t" << ASum << "\t" << 1.0*A[m] / ASum << "\t有主方向" << endl;
+			//	if (1.0*A[m] / ASum>0.599) 
+			//	{
+			//		//cout<<"CI:"<<CI<<"\t" << i << "\t" << j << "\t" << ASum << "\t" << 1.0*A[m] / ASum << "\t有主方向" << endl;
+			//		for (size_t n = 0; n < SSize; n++)
+			//		{
+			//			vector <Point2i> p = TPVec[m][n];
+			//			int length = p.size();
+			//			for (size_t k = 0; k < length; k++)
+			//			{
+			//				flowV.push_back(Point2i(p[k].x + j, p[k].y + i));
+			//			}
+			//		}
+			//		
+			//		break;
+			//	}
+			//	if(m==ASize)
+			//	{
+			//		cout << i << "\t" << j << "\t"<<ASum << "\t无主方向" << endl;
+			//	}
+			//}
+			//if (i == 0 && j == 48) 
+			//{
+			//	int I = 0;
+			//	int len = APVec[I].size();
+			//	for (size_t n = 0; n < len; n++)
+			//	{
+			//		flowV.push_back(Point2i(APVec[I][n].x + j, APVec[I][n].y + i));
+			//	}
+			//	/*int length = SPVec[I].size();
+			//	for (size_t n = 0; n < length; n++)
+			//	{
+			//		flowV.push_back(Point2i(SPVec[I][n].x + j, SPVec[I][n].y + i));
+			//	}*/
+			//}
+			//-------------------------------------------------------------------
+			//保存异常特征
+			//judgeAS3DHOF(i, j, AHOF, APVec, Alen, SHOF, SPVec, Slen, flowV);
+			/*step1：Slen/Alen>2 ?	T:->Slen下标2/3以上的点占比大多数？->目标
+									F:->Slen下标2/3以上且个数大于1的->目标
+			*/					
+			/*if (Slen > (Alen << 1)) 
+			{
+				int start = (Slen << 1) / 3, sum = 0, tsum = 0;
+				
+				for (size_t i = 0; i < Slen; i++)
+				{
+					sum += AHOF[i];
+					if (i >= start) 
+					{ 
+						tsum += AHOF[i]; 
+					}
+				}
+				if (sum < (tsum << 1)) 
+				{
+					for (size_t m = start; m < Slen; m++)
+					{
+						int len = SPVec[m].size();
+						for (size_t n = 0; n < len; n++)
+						{
+							flowV.push_back(Point2i(SPVec[m][n].x + j, SPVec[m][n].y + i));
+						}
+						
+					}
+				}
+			}
+			else 
+			{
+				int start = (Slen << 1) / 3-1;
+				for (size_t m = start; m < Slen; m++)
+				{
+					int len = SPVec[m].size();
+					for (size_t n = 0; n < len; n++)
+					{
+						flowV.push_back(Point2i(SPVec[m][n].x + j, SPVec[m][n].y + i));
+					}
+
+				}
+
+			}*/
 			//cvRectangle(image, cvPoint(j*Wstep + minW, i*Hstep + minH), cvPoint(imgc + minW, imgr + minH), Scalar(0, 0, 0), 1, 4);
 
 			/*if (i == 16 && j == 48)
@@ -742,25 +953,70 @@ void getAbnormalFlowByAS3DHOF(const Mat flowMat, vector<Point2i>& flowV)
 			}
 			}
 			}*/
-			int n = 0;
-			for (size_t m = Slen - 1; m > 0; m--)
-			{
-				if (n == 2)break;
-				//if (SHOF[m] > SK || SHOF[m] == 0) { continue; }
-				//else
-				//{
-				int len = SPVec[m].size();
-				if (len < 2) { continue; }
-				for (size_t n = 0; n < len; n++)
-				{
-					flowV.push_back(Point2i(SPVec[m][n].x + j, SPVec[m][n].y + i));
-				}
-				++n;
-				//}
+			//int n = 0;
+			//for (size_t m = Slen - 1; m > 0; m--)
+			//{
+			//	if (n == 2)break;
+			//	//if (SHOF[m] > SK || SHOF[m] == 0) { continue; }
+			//	//else
+			//	//{
+			//	int len = SPVec[m].size();
+			//	if (len < 2) { continue; }
+			//	for (size_t n = 0; n < len; n++)
+			//	{
+			//		flowV.push_back(Point2i(SPVec[m][n].x + j, SPVec[m][n].y + i));
+			//	}
+			//	++n;
+			//	//}
+			////}
+			////----------------------------------------------------------------------------------
 			//}
-			//----------------------------------------------------------------------------------
+		}
+	}
+}
+
+void judgeAS3DHOF(const int y, const int x, const int * AHOF, const vector<Point2i> *APvec,const int Alen, const int * SHOF, const vector<Point2i> *SPvec,const int Slen, vector<Point2i>& flowV)
+{
+	int asum = 0;
+	for (size_t i = 0; i < Alen; i++)		//求和
+	{
+		asum += AHOF[i];
+	}
+	int hasum = asum >> 1, c = -1;
+	for (size_t i = 0; i < Alen; i++)		//是否存在一列的值大于和的一半
+	{
+		if (AHOF[i] > hasum) 
+		{
+			c = i;
+			break;
+		}
+	}
+	int sNoZeroColNum = 0, less2 = 0;
+	for (size_t i = 0; i < Slen; i++)
+	{
+		int len = SPvec[i].size();
+		if (len > 0) 
+		{
+			++sNoZeroColNum;
+			if (len < 2) 
+			{
+				++less2;
 			}
 		}
+	}
+	float ra = 1.0*less2 / sNoZeroColNum;
+	if (c != -1&&ra<0.5) 
+	{
+		int length = APvec[c].size();
+		vector<Point2i> Ap = APvec[c];
+		for (size_t i = 0; i < length; i++)
+		{
+			flowV.push_back(Point2i(Ap[i].x + x, Ap[i].y + y));
+		}
+	}
+	else
+	{
+
 	}
 }
 
@@ -833,14 +1089,14 @@ void drawWindow(IplImage * image)
 	int we = 0, he = 0, x = 0, y = 0, x_ = 0, y_ = 0;
 	for (size_t i = 0; i < HNf; i += sh) 
 	{
-		he = i + dh;
+		he = i + dh - 1;					//右下角y，dh表示区域的h值
 		he = he > HNf ? HNf : he;			//是否越界
 		y = i*Hstep + minH;					//将左上角y投影到原图像
 		
 		for (size_t j = 0; j < WNf; j += sw)
 		{
-			x = i*Wstep + minW;				//将左上角x投影到原图像
-			we = j + dw;
+			x = j*Wstep + minW;				//将左上角x投影到原图像
+			we = j + dw - 1;				//右下角x，dw表示区域的w值
 			we = we > WNf ? WNf : we;		//是否越界
 			y_ = he*Hstep;					//将右下角y投影到ROI区域
 			x_ = we*Wstep;					//将右下角x投影到ROI区域
@@ -848,6 +1104,7 @@ void drawWindow(IplImage * image)
 			x_ = x_ < ROIW ? x_ : ROIW;		//是否越界
 			y_ += minH;						//将右下角y投影到原图像
 			x_ += minW;						//将右下角y投影到原图像
+			//if(i==8&&j==8)
 			cvRectangle(image, cvPoint(x, y), cvPoint(x_, y_), Scalar(0, 0, 0), 1, 4);
 		}
 	}
@@ -900,4 +1157,309 @@ void saveAS3DHOF2File(int const * AHOF, const int Alen, const int const * SHOF, 
 		fprintf(fp, "\n", "");
 	}
 	fclose(fp);
+}
+
+void calDisparity(const IplImage * left, const IplImage * right, Mat & disparity)
+{
+	Mat _left = cvarrToMat(left);
+	Mat _right = cvarrToMat(right);
+	Rect leftROI, rightROI;
+	cv::Ptr<cv::StereoBM> bm = cv::StereoBM::create(16, 9);
+	bm->setPreFilterType(CV_STEREO_BM_XSOBEL);  //CV_STEREO_BM_NORMALIZED_RESPONSE或者CV_STEREO_BM_XSOBEL
+	bm->setPreFilterSize(9);
+	bm->setPreFilterCap(31);
+	bm->setBlockSize(15);
+	bm->setMinDisparity(0);
+	bm->setNumDisparities(64);
+	bm->setTextureThreshold(10);
+	bm->setUniquenessRatio(5);
+	bm->setSpeckleWindowSize(100);
+	bm->setSpeckleRange(32);
+	bm->setROI1(leftROI);
+	bm->setROI2(rightROI);
+	copyMakeBorder(_left, _left, 0, 0, 80, 0, IPL_BORDER_REPLICATE);
+	copyMakeBorder(_right, _right, 0, 0, 80, 0, IPL_BORDER_REPLICATE);
+	bm->compute(_left, _right, disparity);
+	disparity = disparity.colRange(80, _left.cols);
+	disparity.convertTo(disparity, CV_32F, 1.0 / 16);
+}
+
+void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
+{
+	//【---------ROI区域参数--------】
+	minW = 0;
+	maxW = imageSize.width;
+	minH = (imageSize.height >> 1) - 40;
+	//minH = 0;
+	maxH = imageSize.height;
+	ROIW = maxW - minW;
+	ROIH = maxH - minH;
+	//【---------设置ROI区域-------】
+	cvSetImageROI(preImage, cvRect(minW, minH, ROIW, ROIH));
+	cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
+	cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
+	//【-------计算视差矩阵-------】
+	Mat disparity;
+	calDisparity(curImage,rightCurImage,disparity);
+	imshow("disparity", disparity);
+	//normalize(disparity,disparity,256,CV_MINMAX);
+	//imshow("disparity2", disparity);
+	//【-------计算光流矩阵-------】
+	Mat preFeaturesMat, curFeaturesMat;
+	calOpticalFlow(preImage, curImage, preFeaturesMat, curFeaturesMat);
+	//【-------Multiple Layer-------】
+	vector<Point2i> preV[MLN];
+	vector<Point2i> curV[MLN];
+	multipleLayer(disparity, preFeaturesMat, curFeaturesMat, preV, curV, MLN);
+	
+	//【-------Multiple Motion-------】
+	vector<Point2i> preMV[MLN][MMN];
+	vector<Point2i> curMV[MLN][MMN];
+	multipleMotion(preV, curV, MLN, preMV, curMV);
+	//【-------Multiple class-------】
+	Mat LMC[MLN][MMN];
+	int CMI[MLN][MMN];
+	multipleClass(preMV, curMV, MLN, LMC, CMI);
+	Mat tem = LMC[3][1];
+	cout << tem.rows << "\t" << tem.cols << "\t"<<CMI[3][1]<<endl;
+	//int cMax = CMI[5][1];
+	
+	for (size_t i = 0; i < tem.rows; i++)
+	{
+		for (size_t j = 0; j < tem.cols; j++)
+		{
+			if (tem.at<Vec6f>(i, j)[5]==1) 
+			{
+				cout << i << "\t" << j << "\t" << tem.at<Vec6f>(i, j)[5] << endl;
+				cvCircle(curImage, Point(j * 10, i * 10), tem.at<Vec6f>(i, j)[5], Scalar(0, 0, 0),1);
+			}
+
+		}
+	}
+	int cMax = CMI[3][1];
+	vector<Point2i> * vM = new vector<Point2i>[cMax];
+	int c = 0;
+	for (size_t i = 0; i < tem.rows; i++)
+	{
+		for (size_t j = 0; j < tem.cols; j++)
+		{
+			c = tem.at<Vec6f>(i, j)[5];
+			if (c == 0) { continue; }
+			vM[c - 1].push_back(Point2i(j * 10, i * 10));
+		}
+	}
+	
+	for (size_t i = 0; i < cMax; i++)
+	{
+		int minX = 99999, minY = 99999, maxX = 0, maxY = 0, length = 0;
+		vector<Point2i> point2iV = vM[i];
+		length = point2iV.size();
+		if (length < 3) { continue; }
+		int x, y;
+		for (size_t j = 0; j < length; j++)
+		{
+			x = point2iV[j].x;
+			y = point2iV[j].y;
+			minX = x < minX ? x : minX;
+			minY = y < minY ? y : minY;
+			maxX = x > maxX ? x : maxX;
+			maxY = y > maxY ? y : maxY;
+		}
+		cvRectangle(curImage, Point(minX, minY ), Point(maxX , maxY ), Scalar(0, 0, 0), 2);
+	}
+	cvShowImage("s",curImage);
+	Mat flowMat;
+	saveFlow2Mat(preFeaturesMat, curFeaturesMat, flowMat);
+}
+
+int markDis(float distance)
+{
+	int layer;
+	if (distance <= 0)
+	{
+		layer = 0;
+	}
+	else if (distance>0 && distance <= 5)
+	{
+		layer = 1;
+	}
+	else if (distance>5 && distance <= 10)
+	{
+		layer = 2;
+	}
+	else if (distance>10 && distance <= 20)
+	{
+		layer = 3;
+	}
+	else if (distance>20 && distance <= 40)
+	{
+		layer = 4;
+	}
+	else if (distance>40 && distance <= 100)
+	{
+		layer = 5;
+	}
+	else if (distance>100)
+	{
+		layer = 6;
+	}
+	return layer;
+}
+
+void multipleMotion(vector<Point2i> *preV, vector<Point2i> *curV, int Vlen, vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN])
+{
+	for (size_t i = 0; i < Vlen; i++)
+	{
+		cout << "第" << i << "层" << endl;
+		findMotion(preV[i], curV[i], preMV[i], curMV[i], 0);
+	}
+}
+
+void findMotion(vector<Point2i> preV, vector<Point2i> curV, vector<Point2i>* preMV, vector<Point2i>* curMV, int N)
+{
+	int length = curV.size();
+	if (length <= 4)
+		return;
+	if (N >= MMN)
+		return;
+	vector<uchar> status;
+	Mat matix = findHomography(curV, preV, status, CV_RANSAC);
+	vector<Point2i> preVT, curVT;
+	for (size_t i = 0; i < status.size(); i++)
+	{
+		if (status[i] == 1)
+		{
+			curMV[N].push_back(curV[i]);
+			preMV[N].push_back(preV[i]);
+		}
+		else
+		{
+			preVT.push_back(preV[i]);
+			curVT.push_back(curV[i]);
+		}
+	}
+	findMotion(preVT, curVT, preMV, curMV, ++N);
+}
+
+void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN],int CMI[][MMN])
+{
+	int x = 0, y = 0;
+	int cmi = 0;
+	for (size_t i = 0; i < Vlen; i++)		//每一层
+	{
+		for (size_t j = 0; j < MMN; j++)	//每一个motion
+		{
+			//将vector中的点映射到Mat中		pre_x,pre_y,angle,size,status,class
+			//LMC[i][j] = Mat(HNf, WNf, CV_32FC(6), Scalar(0));
+			Mat mat(HNf,WNf,CV_32FC(6),Scalar(0));
+			vector<Point2i> cv = curMV[i][j];
+			vector<Point2i> pv = preMV[i][j];
+			int length = cv.size();
+			for (size_t k = 0; k < length; k++)
+			{
+				x = cv[k].x;		//当前帧中特征点坐标
+				y = cv[k].y;
+				int r = y / Hstep;	//在光流mat中对应的坐标	
+				int c = x / Wstep;
+				r = abs(y - r*Hstep) < 0.000001 ? r : r + 1;
+				c = abs(x - c*Wstep) < 0.000001 ? c : c + 1;
+				float pr = pv[k].y;	//前一帧中对应的特征点坐标
+				float pc = pv[k].x;
+				float angle = 0., size = 0.;
+				calFlowSizeAngle(pc, pr, x, y, size, angle);	//光流大小和方向
+				mat.at<Vec6f>(r, c)[0] = pc;
+				mat.at<Vec6f>(r, c)[1] = pr;
+				mat.at<Vec6f>(r, c)[2] = angle;
+				mat.at<Vec6f>(r, c)[3] = size;
+				mat.at<Vec6f>(r, c)[4] = 0;		//status:0-正常 1-异常
+				mat.at<Vec6f>(r, c)[5] = -1;
+			}
+			cmi = findClass(mat);
+			LMC[i][j] = mat;
+			CMI[i][j] = cmi;
+		}
+	}
+}
+
+int findClass(Mat & mat)
+{
+	int H = mat.rows;
+	int W = mat.cols;
+	int c = 0, i1 = 0, j0 = 0, j1 = 0, ii = 0, jj = 0, v = 0;
+	int INDEX = 1;
+	for (size_t i = 0; i < H; i++)
+	{
+		for (size_t j = 0; j < W; j++)
+		{
+			c = mat.at<Vec6f>(i, j)[5];
+			if (c == 0)
+				continue;
+			for (size_t m = 0; m < 2; m++)
+			{
+				ii = i + m;
+				if (ii<0 || ii>(H - 1)) 
+				{
+					continue; 
+				}
+				for (int n = -1; n < 2; n++)
+				{
+					jj = j + n;
+					if (jj<0 || jj>W - 1) 
+					{ 
+						continue; 
+					}
+					v = mat.at<Vec6f>(ii, jj)[5];
+					c = v > c ? v : c;
+				}
+			}
+			if(c>0)
+			{
+				markClass(mat, i, j, c);
+			}
+			else if (c == 0) 
+			{
+				markClass(mat, i, j, INDEX++);
+			}
+		}
+	}
+	return INDEX - 1;
+}
+
+void markClass(Mat & mat, int i, int j,int c)
+{
+	int H = mat.rows;
+	int W = mat.cols;
+	int ii = 0, jj = 0, v = 0;
+	for (size_t m = 0; m < 2; m++)
+	{
+		ii = i + m;
+		if (ii<0 || ii>H - 1) { continue; }
+		for (int n = -1; n < 2; n++)
+		{
+			jj = j + n;
+			if (jj<0 || jj>W - 1) { continue; }
+			mat.at<Vec6f>(ii, jj)[5] = mat.at<Vec6f>(ii, jj)[5] != 0 ? c : 0;
+		}
+	}
+}
+
+void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector<Point2i>* preV, vector<Point2i>* curV, int N)
+{
+	int length = curFeaturesMat.rows;
+	int cr = 0, cc = 0,pr = 0,pc = 0, layer = 0;
+	float dis = 0., disp = 0.;
+	for (size_t i = 0; i < length; i++)
+	{
+		cc = curFeaturesMat.at<float>(i, 0);
+		cr = curFeaturesMat.at<float>(i, 1);
+		pc = preFeaturesMat.at<float>(i, 0);
+		pr = preFeaturesMat.at<float>(i, 1);
+		disp = disparity.at<float>(cr, cc);
+		if (fabs(cc - pc) < 0.0000001) { continue; }
+		if (disp <= 0.000001) { dis = 0; }
+		dis = disp <= 0.000001 ? 0 : b*fx / disp;
+		layer = markDis(dis);
+		curV[layer].push_back(Point2i(cc, cr));
+		preV[layer].push_back(Point2i(pc, pr));
+	}
 }
