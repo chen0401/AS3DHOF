@@ -1,5 +1,6 @@
 #include <iostream>
 #include <opencv2\opencv.hpp> 
+#include "DBSCAN.h"			
 
 using namespace std;
 using namespace cv;
@@ -26,8 +27,8 @@ const float CST = 0.5f;			//HOF矩阵中不为0的列数与总列数之比的阈值
 
 const float FRT = 1.0;			//正反向光流阈值
 const float MFS = 4.0;			//光流大小阈值
-const int iStart = 123;			//起始帧
-const int iEnd = 124;			//结束帧
+const int iStart = 115;			//起始帧
+const int iEnd = 116;			//结束帧
 int CI = 0;						//当前帧序号
 
 const float AST = 0.015f;			//AHOF阈值
@@ -51,12 +52,15 @@ const double fx = 963.5594;
 const int MLN = 7;
 const int MMN = 4;
 
+Scalar scalar[4] = { cvScalar(255,255,255),cvScalar(0,255,0) ,cvScalar(0,0,255) ,cvScalar(255,0,0) };
+
 typedef cv::Vec<float, 5> Vec5f;	//5通道
 //typedef cv::Vec<float, 6> Vec6f;	//6通道
 IplImage * image = NULL;
 static int startH;					//图像Y方向的起始位置
 char *outDest = "../output/56/flow/0000000%03d.png";
 char *hofText = "../output/hof/%d-AS3DHOF-%d-%d.txt";
+char *multipleClassDest = "../output/56/multipleClass/0000000%03d_DB.png";
 
 char *dest = "../input/KITTI/56/image_00/data/0000000%03d.png";
 char *rightDest = "../input/KITTI/56/image_01/data/0000000%03d.png";
@@ -287,10 +291,10 @@ void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat,vector<
 -返回：
 		int				//所属层标
 */
-int markDis(float dis);
+int markLayer(float dis);
 void multipleMotion(vector<Point2i>* preV, vector<Point2i> *curV, int Vlen, vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN]);
 void findMotion(vector<Point2i> preV, vector<Point2i> curV, vector<Point2i> *preMV, vector<Point2i> *curMV, int N);
-void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN], int CMI[][MMN]);
+void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN], int CMI[][MMN],vector<int> Mask[][MMN]);
 int findClass(Mat &mat);
 void markClass(Mat &mat, int r, int y, int c);
 int main()
@@ -300,6 +304,7 @@ int main()
 	
 	char *curDes = "";
 	char preSrc[200], curSrc[200], rightCurSrc[200];
+	char multipleClassSrc[200];
 	//【加载数据集】
 	for (int i = iStart; i < iEnd; i++)
 	{
@@ -309,12 +314,14 @@ int main()
 		sprintf_s(preSrc, dest, i);
 		sprintf_s(curSrc, dest, i + 1);
 		sprintf_s(rightCurSrc, rightDest, i + 1);
+		sprintf_s(multipleClassSrc, multipleClassDest, i + 1);
 
 		preImage = cvLoadImage(preSrc, CV_BGR2GRAY);				//左图：t-1时刻
 		curImage = cvLoadImage(curSrc, 0);				//左图：t时刻
 		rightCurImage = cvLoadImage(rightCurSrc, 0);	//右图：t时刻
-		image = curImage;
+		//image = curImage;
 		imageSize = cvGetSize(curImage);
+		
 		//【将当前帧序号写入文件:hof/帧序列号-AS3DHOF-滑动窗口h-滑动窗口w.txt】
 		if (ifSaveHOF) 
 		{
@@ -326,7 +333,7 @@ int main()
 		}
 		//AS3DHOF(preImage, curImage);
 		MMM(preImage, curImage, rightCurImage);
-		//cvSaveImage(outSrc, curImage);
+		cvSaveImage(multipleClassSrc, curImage);
 
 		//cvShowImage("当前帧", curImage);
 		//cvShowImage("前一帧", preImage);
@@ -1198,9 +1205,15 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 	cvSetImageROI(preImage, cvRect(minW, minH, ROIW, ROIH));
 	cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
 	cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
+	//image = curImage;
+	//if (CI = iStart + 1)
+	//{
+		image = cvCreateImage(cvSize(ROIW, ROIH), curImage->depth, 3);
+	//}
+	cvCvtColor(curImage, image, CV_GRAY2BGR);
 	//【-------计算视差矩阵-------】
 	Mat disparity;
-	calDisparity(curImage,rightCurImage,disparity);
+	calDisparity(curImage, rightCurImage, disparity);
 	imshow("disparity", disparity);
 	//normalize(disparity,disparity,256,CV_MINMAX);
 	//imshow("disparity2", disparity);
@@ -1219,12 +1232,52 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 	//【-------Multiple class-------】
 	Mat LMC[MLN][MMN];
 	int CMI[MLN][MMN];
-	multipleClass(preMV, curMV, MLN, LMC, CMI);
-	Mat tem = LMC[3][1];
-	cout << tem.rows << "\t" << tem.cols << "\t"<<CMI[3][1]<<endl;
+	vector<int> Mask[MLN][MMN];
+	multipleClass(preMV, curMV, MLN, LMC, CMI, Mask);		//
+	//Mat tem = LMC[3][1];
+	//cout << tem.rows << "\t" << tem.cols << "\t"<<CMI[3][1]<<endl;
 	//int cMax = CMI[5][1];
-	
-	for (size_t i = 0; i < tem.rows; i++)
+
+	/*vector<Point2i> *LMV[MLN][MMN];
+	for (size_t i = 2; i < MLN; i++)
+	{
+		for (size_t j = 1; j < MMN; j++)
+		{
+			int cMax = CMI[i][j];
+			LMV[i][j] = new vector<Point2i>[cMax];
+			vector<Point2i> *p = LMV[i][j];
+			Mat tem = LMC[i][j];
+			int c = 0;
+			for (size_t m = 0; m < tem.rows; m++)
+			{
+				for (size_t n = 0; n < tem.cols; n++)
+				{
+					c = tem.at<Vec6f>(m, n)[5];
+					if (c == 0) { continue; }
+					p[c - 1].push_back(Point2i(n * 10, m * 10));
+				}
+			}
+			for (size_t m = 0; m < cMax; m++)
+			{
+				int minX = 99999, minY = 99999, maxX = 0, maxY = 0, length = 0;
+				vector<Point2i> point2iV = p[m];
+				length = point2iV.size();
+				if (length < 3) { continue; }
+				int x, y;
+				for (size_t n = 0; n < length; n++)
+				{
+					x = point2iV[n].x;
+					y = point2iV[n].y;
+					minX = x < minX ? x : minX;
+					minY = y < minY ? y : minY;
+					maxX = x > maxX ? x : maxX;
+					maxY = y > maxY ? y : maxY;
+				}
+				cvRectangle(curImage, Point(minX, minY), Point(maxX, maxY), Scalar(0, 0, 0), j);
+			}
+		}
+	}*/
+	/*for (size_t i = 0; i < tem.rows; i++)
 	{
 		for (size_t j = 0; j < tem.cols; j++)
 		{
@@ -1235,8 +1288,8 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 			}
 
 		}
-	}
-	int cMax = CMI[3][1];
+	}*/
+	/*int cMax = CMI[3][1];
 	vector<Point2i> * vM = new vector<Point2i>[cMax];
 	int c = 0;
 	for (size_t i = 0; i < tem.rows; i++)
@@ -1247,9 +1300,9 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 			if (c == 0) { continue; }
 			vM[c - 1].push_back(Point2i(j * 10, i * 10));
 		}
-	}
+	}*/
 	
-	for (size_t i = 0; i < cMax; i++)
+	/*for (size_t i = 0; i < cMax; i++)
 	{
 		int minX = 99999, minY = 99999, maxX = 0, maxY = 0, length = 0;
 		vector<Point2i> point2iV = vM[i];
@@ -1266,13 +1319,18 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 			maxY = y > maxY ? y : maxY;
 		}
 		cvRectangle(curImage, Point(minX, minY ), Point(maxX , maxY ), Scalar(0, 0, 0), 2);
-	}
-	cvShowImage("s",curImage);
-	Mat flowMat;
-	saveFlow2Mat(preFeaturesMat, curFeaturesMat, flowMat);
+	}*/
+	
+	char multipleClassSrc[200];
+	sprintf_s(multipleClassSrc, multipleClassDest, CI);
+	cvSaveImage(multipleClassSrc, image);
+	cvShowImage("image", image);
+	waitKey(1);
+	//Mat flowMat;
+	//saveFlow2Mat(preFeaturesMat, curFeaturesMat, flowMat);
 }
 
-int markDis(float distance)
+int markLayer(float distance)
 {
 	int layer;
 	if (distance <= 0)
@@ -1341,44 +1399,83 @@ void findMotion(vector<Point2i> preV, vector<Point2i> curV, vector<Point2i>* pre
 	findMotion(preVT, curVT, preMV, curMV, ++N);
 }
 
-void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN],int CMI[][MMN])
+void multipleClass(vector<Point2i> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, Mat LMC[][MMN],int CMI[][MMN],vector<int> Mask[][MMN])
 {
-	int x = 0, y = 0;
-	int cmi = 0;
-	for (size_t i = 0; i < Vlen; i++)		//每一层
-	{
-		for (size_t j = 0; j < MMN; j++)	//每一个motion
+	DBSCAN dbscan;
+	for (size_t i = 1; i < Vlen; i++)
+	{	
+		for (size_t j = 1; j < MMN; j++)
 		{
-			//将vector中的点映射到Mat中		pre_x,pre_y,angle,size,status,class
-			//LMC[i][j] = Mat(HNf, WNf, CV_32FC(6), Scalar(0));
-			Mat mat(HNf,WNf,CV_32FC(6),Scalar(0));
-			vector<Point2i> cv = curMV[i][j];
-			vector<Point2i> pv = preMV[i][j];
-			int length = cv.size();
-			for (size_t k = 0; k < length; k++)
+			vector<int> mask = Mask[i][j];
+			vector<Point2i> points = curMV[i][j];
+			dbscan.Init(curMV[i][j], 11.0, 3);
+			int c = dbscan.DoDBSCANRecursive(mask);
+			if(c>0)
 			{
-				x = cv[k].x;		//当前帧中特征点坐标
-				y = cv[k].y;
-				int r = y / Hstep;	//在光流mat中对应的坐标	
-				int c = x / Wstep;
-				r = abs(y - r*Hstep) < 0.000001 ? r : r + 1;
-				c = abs(x - c*Wstep) < 0.000001 ? c : c + 1;
-				float pr = pv[k].y;	//前一帧中对应的特征点坐标
-				float pc = pv[k].x;
-				float angle = 0., size = 0.;
-				calFlowSizeAngle(pc, pr, x, y, size, angle);	//光流大小和方向
-				mat.at<Vec6f>(r, c)[0] = pc;
-				mat.at<Vec6f>(r, c)[1] = pr;
-				mat.at<Vec6f>(r, c)[2] = angle;
-				mat.at<Vec6f>(r, c)[3] = size;
-				mat.at<Vec6f>(r, c)[4] = 0;		//status:0-正常 1-异常
-				mat.at<Vec6f>(r, c)[5] = -1;
+				int length = mask.size();
+				vector<Point2i> * pvs = new vector<Point2i>[c];
+				for (size_t k = 0; k < length; k++)
+				{
+					//cout << k << endl;
+					if (mask[k] >= 0)
+						pvs[mask[k]].push_back(points[k]);
+				}
+				for (size_t k = 0; k < c; k++)//遍历每一类
+				{
+					vector<Point2i> pv = pvs[k];
+					length = pv.size();
+					int minX = 99999, minY = 99999, maxX = -1, maxY = -1, x = 0, y = 0;
+					for (size_t m = 0; m < length; m++)//遍历每一类中的每一个点
+					{
+						x = pv[m].x;
+						y = pv[m].y;
+						minX = x < minX ? x : minX;
+						minY = y < minY ? y : minY;
+						maxX = x > maxX ? x : maxX;
+						maxY = y > maxY ? y : maxY;
+						cvCircle(image, Point(x, y), 2, scalar[j], 1, 4);
+					}
+						cvRectangle(image, Point(minX, minY), Point(maxX, maxY), Scalar(0, 0, 0), 1);
+				}
 			}
-			cmi = findClass(mat);
-			LMC[i][j] = mat;
-			CMI[i][j] = cmi;
 		}
 	}
+	//int x = 0, y = 0;
+	//int cmi = 0;
+	//for (size_t i = 0; i < Vlen; i++)		//每一层
+	//{
+	//	for (size_t j = 0; j < MMN; j++)	//每一个motion
+	//	{
+	//		//将vector中的点映射到Mat中		pre_x,pre_y,angle,size,status,class
+	//		//LMC[i][j] = Mat(HNf, WNf, CV_32FC(6), Scalar(0));
+	//		Mat mat(HNf,WNf,CV_32FC(6),Scalar(0));
+	//		vector<Point2i> cv = curMV[i][j];
+	//		vector<Point2i> pv = preMV[i][j];
+	//		int length = cv.size();
+	//		for (size_t k = 0; k < length; k++)
+	//		{
+	//			x = cv[k].x;		//当前帧中特征点坐标
+	//			y = cv[k].y;
+	//			int r = y / Hstep;	//在光流mat中对应的坐标	
+	//			int c = x / Wstep;
+	//			r = abs(y - r*Hstep) < 0.000001 ? r : r + 1;
+	//			c = abs(x - c*Wstep) < 0.000001 ? c : c + 1;
+	//			float pr = pv[k].y;	//前一帧中对应的特征点坐标
+	//			float pc = pv[k].x;
+	//			float angle = 0., size = 0.;
+	//			calFlowSizeAngle(pc, pr, x, y, size, angle);	//光流大小和方向
+	//			mat.at<Vec6f>(r, c)[0] = pc;
+	//			mat.at<Vec6f>(r, c)[1] = pr;
+	//			mat.at<Vec6f>(r, c)[2] = angle;
+	//			mat.at<Vec6f>(r, c)[3] = size;
+	//			mat.at<Vec6f>(r, c)[4] = 0;		//status:0-正常 1-异常
+	//			mat.at<Vec6f>(r, c)[5] = -1;
+	//		}
+	//		cmi = findClass(mat);
+	//		LMC[i][j] = mat;
+	//		CMI[i][j] = cmi;
+	//	}
+	//}
 }
 
 int findClass(Mat & mat)
@@ -1458,7 +1555,7 @@ void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector
 		if (fabs(cc - pc) < 0.0000001) { continue; }
 		if (disp <= 0.000001) { dis = 0; }
 		dis = disp <= 0.000001 ? 0 : b*fx / disp;
-		layer = markDis(dis);
+		layer = markLayer(dis);
 		curV[layer].push_back(Point2i(cc, cr));
 		preV[layer].push_back(Point2i(pc, pr));
 	}
