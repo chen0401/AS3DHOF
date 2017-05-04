@@ -56,6 +56,9 @@ const double fx = 963.5594;
 const int MLN = 7;				//number of layers
 const int MMN = 4;				//number of motions
 const int DBMN = 3;
+//【车道线】
+CvPoint *preRoad = NULL;		//前一帧车道线：长度为4的数组 0左车道起点  1左车道终点  2右车道起点   3右车道终点
+CvPoint *curRoad = NULL;		//当前帧车道线
 
 Scalar scalar[4] = { cvScalar(255,255,255),cvScalar(0,255,0) ,cvScalar(0,0,255) ,cvScalar(255,0,0) };
 
@@ -361,7 +364,31 @@ void saveMotionImage(IplImage *curImage, vector<Point2f> preMV[][MMN], vector<Po
 功能：保存目标图像
 */
 void saveObjectsImage(IplImage *curImage);
-//------------------------------------------------程序入口------------------------------------------------
+
+void getUVDisparity(IplImage *left, IplImage *right);
+/*
+-功能：车道线检测
+-输入：
+		IplImage *curImage		//输入图像
+*/
+void getRoad(IplImage * curImage);
+/*
+-功能：保存车道线图像
+*/
+void saveRoadImage(IplImage *image);
+/*
+-功能：初始化车道线参数
+*/
+void initRoad();
+/*
+-功能：选择车道线
+*/
+void selectRoad(vector<CvPoint*>lRoad, vector<CvPoint*>rRoad);
+/*
+-功能：更新车道线
+*/
+void updateRoad();
+//-------------------------------------------【程序入口】-------------------------------------------------
 int main()
 {
 	IplImage *preImage, *curImage, *rightCurImage;
@@ -370,6 +397,8 @@ int main()
 	char *curDes = "";
 	char preSrc[200], curSrc[200], rightCurSrc[200];
 	char multipleClassSrc[200];
+	//【初始化车道线】
+	initRoad();
 	//【加载数据集】
 	for (int i = iStart; i < iEnd; i++)
 	{
@@ -393,8 +422,25 @@ int main()
 			fprintf(fp, "T\n%d\n", CI);
 			fclose(fp);
 		}
+
+		//【---------ROI区域参数--------】
+		minW = 0;
+		maxW = imageSize.width;
+		minH = (imageSize.height >> 1) - 40;
+		//minH = 0;
+		maxH = imageSize.height;
+		ROIW = maxW - minW;
+		ROIH = maxH - minH;
+		//【---------设置ROI区域-------】
+		cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
+		//【---------检测车道线--------】
+		getRoad(curImage);
+		//【---------更新车道线--------】
+		updateRoad();
+		//【---------绘制车道线--------】
+		//getUVDisparity(curImage, rightCurImage);
 		//AS3DHOF(preImage, curImage);
-		MMM(preImage, curImage, rightCurImage);
+		//MMM(preImage, curImage, rightCurImage);
 		//cvSaveImage(multipleClassSrc, curImage);
 
 		//cvShowImage("当前帧", curImage);
@@ -407,7 +453,7 @@ int main()
 	waitKey(0);
 	return 0;
 }
-//-----------------------------------------【方法定义】-------------------------------------------------
+//-------------------------------------------【方法定义】-------------------------------------------------
 void AS3DHOF(IplImage * preImage, IplImage *curImage)
 {
 	//【ROI区域参数】
@@ -446,6 +492,7 @@ void AS3DHOF(IplImage * preImage, IplImage *curImage)
 	drawFlow(curImage, abFlowVAS, flowMat);
 	drawWindow(curImage);
 }
+
 void getFeaturesPointsSteps(const IplImage * image, CvPoint2D32f ** features, int & pointNum)
 {
 	//CvSize  imageSize = cvGetSize(image);
@@ -1555,20 +1602,21 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 	DBSCAN dbscan;
 	for (size_t i = 1; i < Vlen; i++)
 	{
-		/*int DBR = 21.0;
-		int DBN = 5;
-		if (i > 4)
+		double DBR = 11.0;
+		int DBN = 3;
+		if (i < 4)
 		{
-			DBR = 11.0;
-			DBN = 3;
-		}*/
+			DBR = 31.0;
+			DBN = 5;
+		}
+
 		size_t j = i > 4 ? 0 : 1;
 		for (; j < MMN; j++)
 		{
 			vector<int> mask;
 			vector<Point2i> cPoints = curMV[i][j];		//第i层第j运动模型的坐标点向量
 			vector<Point2f> pPoints = preMV[i][j];
-			dbscan.Init(cPoints, 11.0, 3);
+			dbscan.Init(cPoints, DBR, DBN);
 			int c = dbscan.DoDBSCANRecursive(mask);
 			if (c>0)
 			{
@@ -1586,6 +1634,13 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 					}
 						
 				}
+				//根据视差值聚类
+				/*for (size_t k = 0; k < c; k++)
+				{
+					vector<Point2f> pv = pvs[k];
+					vector<Point2i> cv = cvs[k];
+					int length = cv.size();
+				}*/
 				for (size_t k = 0; k < c; k++)//遍历每一类
 				{
 					vector<Point2f> pv = pvs[k];		//第k类
@@ -1684,9 +1739,175 @@ void saveMotionImage(IplImage *curImage,vector<Point2f> preMV[][MMN], vector<Poi
 void saveObjectsImage(IplImage * image)
 {
 	char dest[200];
-	char *src = "../output/%d/multipleObjects-56层含motion0/0000000%03d_objects.png";
+	char *src = "../output/%d/multipleObjects-56层含motion0/0000000%03d_objects_.png";
 	sprintf_s(dest, src, DATA, CI);
 	cvSaveImage(dest, image);
+}
+
+void getUVDisparity(IplImage * left, IplImage * right)
+{
+	Mat disparity;
+	calDisparity(left, right, disparity);
+	imshow("disparity", disparity);
+	double max = 0.;
+	minMaxIdx(disparity, NULL, &max);
+	cout << max << endl;
+	int H = disparity.rows;
+	int W = disparity.cols;
+	int M = (int)max + 1;
+	Mat Udisparity = Mat::zeros(M, W, CV_16UC1);
+	Mat Vdisparity = Mat::zeros(H, M, CV_16UC1);
+	int value = 0;
+	for (int i = 0; i < H; i++)
+	{
+		for (int j = 0; j < W; j++)
+		{
+			value = disparity.at<float>(i, j);
+			if (value < 0) { continue; }
+			++Udisparity.at<ushort>(value, j);
+			++Vdisparity.at<ushort>(i, value);
+		}
+	}
+	for (size_t i = 0; i < M; i++)
+	{
+		for (size_t j = 0; j < W; j++)
+		{
+			Udisparity.at<ushort>(i, j) = Udisparity.at<ushort>(i, j) > 10 ? 255 : 0;
+		}
+	}
+	imshow("Udisparity", Udisparity);
+	imwrite("ud.png",Udisparity);
+}
+
+void getRoad(IplImage * curImage)
+{
+	IplImage *temp = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 1);
+	//cvCvtColor(curImage, temp, CV_BGR2GRAY);
+	cvThreshold(curImage, temp, 200, 255.0, CV_THRESH_BINARY);
+	cvErode(temp, temp, NULL, 1);
+	cvDilate(temp, temp, NULL, 1);
+	cvCanny(temp, temp, 50, 120);
+	cvShowImage("temp", temp);
+	//霍夫变换
+	CvSeq *lines = NULL;
+
+	CvMemStorage *storage = cvCreateMemStorage(0);
+	lines = cvHoughLines2(
+		temp, 
+		storage, 
+		CV_HOUGH_PROBABILISTIC,			//method			概率
+		1.0,							//rho
+		CV_PI / 180,					//theta
+		40,								//threshold		像素点个数阈值
+		20,								//param1		最小线段长度
+		10);							//param2		线段的最大间隔
+	int length = lines->total;
+
+	IplImage *image = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 3);
+	cvCvtColor(curImage, image, CV_GRAY2BGR);
+//	cvCopy(curImage, image);
+	vector<CvPoint*> RoadV, lRoadV, rRoadV;
+	for (size_t i = 0; i < length; i++)
+	{
+		CvPoint *points = (CvPoint*)cvGetSeqElem(lines, i);
+		double k = (points[0].y - points[1].y)*1.0 / (points[0].x - points[1].x);
+		
+		if ((k>1&&k<1.5)||(k<-0.5&&k>-1.5)) 
+		{
+			cout <<points[0].x<<","<<points[0].y<<","<<points[1].x<<","<<points[1].y<< ",K:" << k << endl;
+			cvCircle(image, points[0], 4, Scalar(255, 255, 0), 4);
+			cvCircle(image, points[1], 2, Scalar(0, 255, 255), 2);
+			cvLine(image, points[0], points[1], Scalar(0, 0, 255), 2);
+
+			RoadV.push_back(points);
+		}
+		if (k > -1.5&&k < -0.5)			//左车道
+		{
+			lRoadV.push_back(points);
+		}
+		else if (k > 1 && k < 1.5)		//右车道
+		{
+			rRoadV.push_back(points);
+		}	
+	}
+	selectRoad(lRoadV, rRoadV);
+	cvLine(image, curRoad[0], curRoad[1], Scalar(255, 0, 255), 4);
+	cvLine(image, curRoad[2], curRoad[3], Scalar(255, 0, 255), 4);
+	cvShowImage("image", image);
+	saveRoadImage(image);
+}
+
+void saveRoadImage(IplImage *image)
+{
+	char *src = "../output/%d/road/0000000%03d_road.png";
+	char dest[200];
+	sprintf_s(dest, src, DATA, CI);
+	cvSaveImage(dest, image);
+}
+
+void initRoad()
+{
+	preRoad = new CvPoint[4];
+	curRoad = new CvPoint[4];
+	for (size_t i = 0; i < 4; i++)
+	{
+		preRoad[i] = CvPoint(0, 0);
+		curRoad[i] = CvPoint(0, 0);
+	}
+}
+
+void selectRoad(vector<CvPoint*> lRoadV, vector<CvPoint*> rRoadV)
+{
+	//【左车道部分】
+	int length = lRoadV.size();
+	if (length == 0)	//左车道没有候选直线:将前一帧检测到的左车道线复制给当前帧的左车道线
+	{
+		curRoad[0] = preRoad[0];
+		curRoad[1] = preRoad[1];
+	}
+	else				//存在候选直线，寻找最靠近中间的直线
+	{
+		CvPoint * p = lRoadV[0];
+		for (size_t i = 0; i < length; i++)
+		{
+			if (p[1].x < lRoadV[i][1].x&&lRoadV[i][1].x < (ROIW >> 1))
+			{
+				p = lRoadV[i];
+			}
+		}
+		//将候选直线复制给当前帧的左车道线
+		curRoad[0] = p[0];
+		curRoad[1] = p[1];
+	}
+	//【右车道部分】
+	length = rRoadV.size();
+	if (length == 0) 
+	{
+		curRoad[2] = preRoad[2];
+		curRoad[3] = preRoad[3];
+	}
+	else 
+	{
+		CvPoint * p = rRoadV[0];
+		for (size_t i = 0; i < length; i++)
+		{
+			if (p[1].x > rRoadV[i][1].x&&rRoadV[i][1].x > (ROIW >> 1))
+			{
+				p = rRoadV[i];
+			}
+		}
+		//将候选直线复制给当前帧的左车道线
+		curRoad[2] = p[0];
+		curRoad[3] = p[1];
+	}
+}
+
+void updateRoad()
+{
+	for (size_t i = 0; i < 4; i++)
+	{
+		preRoad[i] = curRoad[i];
+	}
 }
 
 void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector<Point2f>* preV, vector<Point2i>* curV, int N)
