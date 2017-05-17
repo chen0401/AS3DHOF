@@ -8,7 +8,7 @@ using namespace cv;
 //【数据集参数】
 const int DATA = 15;
 //【帧-标记】
-const int iStart = 0;			//起始帧
+const int iStart = 170;			//起始帧
 const int iEnd = 292;			//结束帧
 int CI = 0;						//当前帧序号
 //【特征点提取方法相关参数】
@@ -59,6 +59,8 @@ const int DBMN = 3;
 //【车道线】
 CvPoint *preRoad = NULL;		//前一帧车道线：长度为4的数组 0左车道起点  1左车道终点  2右车道起点   3右车道终点
 CvPoint *curRoad = NULL;		//当前帧车道线
+float leftRK = 0.0f;			//左车道线斜率
+float rightRK = 0.0f;			//右车道线斜率
 
 Scalar scalar[4] = { cvScalar(255,255,255),cvScalar(0,255,0) ,cvScalar(0,0,255) ,cvScalar(255,0,0) };
 
@@ -275,11 +277,11 @@ void saveAS3DHOF2File(int const * AHOF, const int Alen, const int const * SHOF, 
 -输出：
 		Mat & disparity				//视差图
 */
-void calDisparity(const IplImage *left,const IplImage *right,Mat & disparity);
+void calDisparity(const IplImage *left, const IplImage *right, Mat & disparity);
 /*
 -功能：MMM算法
 */
-void MMM(IplImage * preImage,IplImage * curImage,IplImage * rightCurImage);
+void MMM(IplImage * preImage,IplImage * curImage,IplImage * rightCurImage, vector<Mat> &objects, float &minFlowSize, float &maxFlowSize);
 /*
 -功能：结合视差矩阵和光流矩阵，将光流特征点分成N层
 -输入：
@@ -343,7 +345,7 @@ void markClass(Mat &mat, int r, int y, int c);
 -输出：
 		无
 */
-void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen);
+void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, vector<Mat> &objects,float &minFlowSize,float &maxFlowSize, Mat disparity);
 /*
 -功能：保存光流图
 */
@@ -364,7 +366,12 @@ void saveMotionImage(IplImage *curImage, vector<Point2f> preMV[][MMN], vector<Po
 功能：保存目标图像
 */
 void saveObjectsImage(IplImage *curImage);
-
+/*
+-功能：计算uv视差图
+-输入：
+		IplImage *left			//左视图
+		IplImage *rigth			//右视图
+*/
 void getUVDisparity(IplImage *left, IplImage *right);
 /*
 -功能：车道线检测
@@ -388,6 +395,69 @@ void selectRoad(vector<CvPoint*>lRoad, vector<CvPoint*>rRoad);
 -功能：更新车道线
 */
 void updateRoad();
+/*
+-功能：计算目标的特征向量（起点x，起点y，宽度width，高度height,所属车道index,速度大小，速度方向，距离）
+*/
+void calFeaturesOfObjects(Rect object);
+
+float calByGuss(float a,float b,float x);
+/*
+-功能：计算某一点所处的车道标签
+-输入：
+		float x					//点坐标x
+		float y,				//点坐标y
+		float lRK,				//左车道线斜率		
+		float rRK,				//右车道线斜率
+		CvPoint * curRoad		//车道线起点和终点坐标
+-返回：
+		int						//车道线标签	0 本车道  1左车道   2右车道
+*/
+int getRoadIndex(float x, float y, float lRK, float rRK, CvPoint * curRoad);
+/*
+-功能
+*/
+void getAnglePro(float angle,CvPoint * curRoad);
+/*
+-功能：计算目标object的异常性
+-输入：
+		Mat object			//目标
+-返回：
+		float				//异常性
+*/
+float calObjectAbn(Mat object,float minS,float maxS);
+/*
+-功能：根据光流大小计算目标的基础异常性
+-输入：
+		float size			//光流大小
+		float minS			//该帧图像所有目标的最小光流
+		float maxS			//该帧图像所有目标的最大光流
+*/
+float calObjectBaseAbnormality(float size,float minS,float maxS);
+/*
+-功能：计算距离权重
+*/
+float calDistanceWeight(float distance, float threshold, float f);
+/*
+-功能：计算方向权重
+-输入：
+		float x				//目标中心位置x
+		float y				//目标中心位置y
+		int angle			//光流方向
+		int r				//所属车道
+-返回：
+		float				//方向权值
+*/
+float calAngleWeight(float x, float y, int angle, int r);
+/*
+-功能：计算角度标签
+-输入：
+		float angle		//角度
+-返回：
+		int				//标签
+*/
+double calAngle(float x, float y, float x_, float y_);
+
+void getAbnormalObjects(vector<Mat> objects, float minFlowSize, float maxFlowSize, Mat &abnormalityMat);
 //-------------------------------------------【程序入口】-------------------------------------------------
 int main()
 {
@@ -432,21 +502,59 @@ int main()
 		ROIW = maxW - minW;
 		ROIH = maxH - minH;
 		//【---------设置ROI区域-------】
+		cvSetImageROI(preImage, cvRect(minW, minH, ROIW, ROIH));
 		cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
+		cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
+		image = cvCreateImage(cvSize(ROIW, ROIH), curImage->depth, 3);
+		cvCvtColor(curImage, image, CV_GRAY2BGR);
 		//【---------检测车道线--------】
 		getRoad(curImage);
 		//【---------更新车道线--------】
 		updateRoad();
-		//【---------绘制车道线--------】
-		//getUVDisparity(curImage, rightCurImage);
-		//AS3DHOF(preImage, curImage);
-		//MMM(preImage, curImage, rightCurImage);
+		//【---------MMM检测出目标区域--------】
+		vector<Rect> rectV;
+		vector<Mat> objects;
+		float minFlowSize = 9999.0f, maxFlowSize = 0.0f;
+		MMM(preImage, curImage, rightCurImage, objects,minFlowSize, maxFlowSize);
+		Mat abnormalityMat;
+		getAbnormalObjects(objects, minFlowSize, maxFlowSize, abnormalityMat);
+		//cout << objects.size() << endl;
 		//cvSaveImage(multipleClassSrc, curImage);
+		////【-------绘制车道线和目标--------】
+		int length = objects.size();
+		float a = sqrt(5);
+		float b = 0;
+		for (size_t k = 0; k < length; k++)
+		{
+		
+			Mat object = objects[k];
+		
+			CvFont font;
+			cvInitFont(&font, CV_FONT_HERSHEY_COMPLEX, 0.5, 0.5, 1, 1, 8);
+		
+			float ab = abnormalityMat.at<float>(k, 0);
+			if (ab > -1) 
+			{
+				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255 * ab), -1);
+			}
+		}
+		
+		double k = 1.0*(curRoad[0].x - curRoad[1].x) / (curRoad[0].y - curRoad[1].y);
+		float x = (80 - curRoad[0].y)*k + curRoad[0].x;
+		float xx = (maxH - curRoad[0].y)*k + curRoad[0].x;
+		cvLine(image, Point(xx, maxH), Point(x, 80), Scalar(0, 255, 0), 2);
+		k = 1.0*(curRoad[2].x - curRoad[3].x) / (curRoad[2].y - curRoad[3].y);
+		x = (80 - curRoad[2].y)*k + curRoad[2].x;
+		xx = (maxH - curRoad[2].y)*k + curRoad[2].x;
+		cvLine(image, Point(xx, maxH), Point(x, 80), Scalar(0, 255, 0), 2);
+		////cvShowImage("当前帧", curImage);
+		////cvShowImage("前一帧", preImage);
+		cvShowImage("image", image);
 
-		//cvShowImage("当前帧", curImage);
-		//cvShowImage("前一帧", preImage);
-		//cvShowImage("image", image);
-
+		//char *src = "../output/15/目标异常性-光流大小-三维距离-角度/0000000%03d.png";
+		//char dest[200];
+		//sprintf_s(dest, src, CI);
+		//cvSaveImage(dest, image);
 		waitKey(1);
 	}
 
@@ -1302,26 +1410,26 @@ void calDisparity(const IplImage * left, const IplImage * right, Mat & disparity
 	disparity.convertTo(disparity, CV_32F, 1.0 / 16);
 }
 
-void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
+void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage, vector<Mat> &objects, float &minFlowSize, float &maxFlowSize)
 {
-	//【---------ROI区域参数--------】
-	minW = 0;
-	maxW = imageSize.width;
-	minH = (imageSize.height >> 1) - 40;
-	//minH = 0;
-	maxH = imageSize.height;
-	ROIW = maxW - minW;
-	ROIH = maxH - minH;
-	//【---------设置ROI区域-------】
-	cvSetImageROI(preImage, cvRect(minW, minH, ROIW, ROIH));
-	cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
-	cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
-	//image = curImage;
-	//if (CI = iStart + 1)
-	//{
-		image = cvCreateImage(cvSize(ROIW, ROIH), curImage->depth, 3);
-	//}
-	cvCvtColor(curImage, image, CV_GRAY2BGR);
+	////【---------ROI区域参数--------】
+	//minW = 0;
+	//maxW = imageSize.width;
+	//minH = (imageSize.height >> 1) - 40;
+	////minH = 0;
+	//maxH = imageSize.height;
+	//ROIW = maxW - minW;
+	//ROIH = maxH - minH;
+	////【---------设置ROI区域-------】
+	//cvSetImageROI(preImage, cvRect(minW, minH, ROIW, ROIH));
+	//cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
+	//cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
+	////image = curImage;
+	////if (CI = iStart + 1)
+	////{
+	//image = cvCreateImage(cvSize(ROIW, ROIH), curImage->depth, 3);
+	////}
+	//cvCvtColor(curImage, image, CV_GRAY2BGR);
 	//【-------计算视差矩阵-------】
 	Mat disparity;
 	calDisparity(curImage, rightCurImage, disparity);
@@ -1348,10 +1456,12 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage)
 	int CMI[MLN][MMN];
 	vector<int> Mask[MLN][MMN];
 	//multipleClass(preMV, curMV, MLN, LMC, CMI, Mask);		//
-	multipleObjects(preMV, curMV, MLN);
-	saveObjectsImage(image);
-	cvShowImage("image", image);
-	waitKey(1);
+	//vector<Rect> rectV;
+	//vector<Mat> objects;
+	multipleObjects(preMV, curMV, MLN, objects, minFlowSize, maxFlowSize, disparity);
+	//saveObjectsImage(image);
+	//cvShowImage("image", image);
+	//waitKey(1);
 	//Mat flowMat;
 	//saveFlow2Mat(preFeaturesMat, curFeaturesMat, flowMat);
 }
@@ -1418,7 +1528,7 @@ void multipleMotion(vector<Point2f> *preV, vector<Point2i> *curV, int LayerN, ve
 {
 	for (size_t i = 0; i < LayerN; i++)
 	{
-		cout << "第" << i << "层" << endl;
+		//cout << "第" << i << "层" << endl;
 		findMotion(preV[i], curV[i], preMV[i], curMV[i], 0);
 	}
 }
@@ -1597,7 +1707,7 @@ void markClass(Mat & mat, int i, int j,int c)
 	}
 }
 
-void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen)
+void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN], int Vlen, vector<Mat> &objects, float &minFlowSize, float &maxFlowSize, Mat disparity)
 {
 	DBSCAN dbscan;
 	for (size_t i = 1; i < Vlen; i++)
@@ -1651,7 +1761,8 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 					int minX = 99999, minY = 99999, maxX = -1, maxY = -1, x = 0, y = 0;
 					float size = 0., angle = 0.;
 					int minA = 37, maxA = -1;
-					int a = 0, s = 0;
+					float maxS = -1, minS = 9999;
+					int a = 0;
 					float PiBin = 2 * Pi / Bin;
 					for (size_t m = 0; m < length; m++)//遍历每一类中的每一个点
 					{
@@ -1667,26 +1778,82 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 						a = angle / PiBin;
 						minA = a < minA ? a : minA;
 						maxA = a > maxA ? a : maxA;
+						minS = size < minS ? size : minS;
+						maxS = size > maxS ? size : maxS;
 						av.push_back(a);
 						sv.push_back(size);
 					}
+					//【该目标的方向】
+					int ang = -1;
+					//统计光流方向上的直方图
 					int len = maxA - minA + 1;
 					int *countA = new int[len]();
 					for (size_t m = 0; m < length; m++)
 					{
 						++countA[av[m] - minA];
 					}
-					Scalar scalar(0, 0, 0);
+					//光流方向直方图中最大值对应的光流方向
+					int maxCountA = -1;
 					for (size_t m = 0; m < len; m++)
 					{
-						if (1.0*countA[m] / length > 0.6) 
+						if (countA[m] > maxCountA) 
 						{
-							scalar = Scalar(0, 255, 0);
-							break;
+							ang = m;
+							maxCountA = countA[m];
 						}
 					}
-					cvRectangle(image, Point(minX, minY), Point(maxX, maxY), scalar, 1);
+					ang += minA;
+					//【该目标的大小】
+					int s = -1;
+					int baseS = minS + 0.5;
+					len = ((int)(maxS + 0.5)) - baseS + 1;
+					int *countS = new int[len]();
+					for (size_t m = 0; m < length; m++)
+					{
+						++countS[(int)(sv[m] + 0.5) - baseS];
+					}
+					int maxCountS = -1;
+					for (size_t m = 0; m < len; m++)
+					{
+						if (countS[m] > maxCountS) 
+						{
+							s = m;
+							maxCountS = countS[m];
+						}
+					}
+					s += baseS;
+					//【目标的距离】
+					float d = 0, disp = 0, dis = 0.0f; int num = 0;
+					for (size_t k = minX; k < maxX + 1; k++) 
+					{
+						for (size_t l = minY; l < maxY + 1; l++)
+						{
+							dis = disparity.at<float>(l, k);
+							if (dis <= 0.0000001) { continue; }
+							disp += dis;
+							num++;
+						}
+					}
+					disp = disp / num;
+					d = fx * b / disp;
+					//【目标的车道线】
+					int I = getRoadIndex((minX + maxX) >> 1, (minY + maxY) >> 1, leftRK, rightRK, curRoad);
+					//保存目标信息的Mat	1*9：minX,minY,maxX,maxY,方向,大小，距离，车道,状态;
+					Mat object(1, 9, CV_32FC1, Scalar(0));
+					object.at<float>(0, 0) = minX;
+					object.at<float>(0, 1) = minY;
+					object.at<float>(0, 2) = maxX;
+					object.at<float>(0, 3) = maxY;
+					object.at<float>(0, 4) = ang;
+					object.at<float>(0, 5) = s;
+					object.at<float>(0, 6) = d;
+					object.at<float>(0, 7) = I;
+					objects.push_back(object);
+
+					minFlowSize = s < minFlowSize ? s : minFlowSize;
+					maxFlowSize = s > maxFlowSize ? s : maxFlowSize;
 				}
+
 			}
 		}
 	}
@@ -1803,38 +1970,28 @@ void getRoad(IplImage * curImage)
 		10);							//param2		线段的最大间隔
 	int length = lines->total;
 
-	IplImage *image = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 3);
-	cvCvtColor(curImage, image, CV_GRAY2BGR);
+	//IplImage *image = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 3);
+	//cvCvtColor(curImage, image, CV_GRAY2BGR);
 //	cvCopy(curImage, image);
 	vector<CvPoint*> RoadV, lRoadV, rRoadV;
 	for (size_t i = 0; i < length; i++)
 	{
 		CvPoint *points = (CvPoint*)cvGetSeqElem(lines, i);
 		double k = (points[0].y - points[1].y)*1.0 / (points[0].x - points[1].x);
-		
-		if ((k>1&&k<1.5)||(k<-0.5&&k>-1.5)) 
-		{
-			cout <<points[0].x<<","<<points[0].y<<","<<points[1].x<<","<<points[1].y<< ",K:" << k << endl;
-			cvCircle(image, points[0], 4, Scalar(255, 255, 0), 4);
-			cvCircle(image, points[1], 2, Scalar(0, 255, 255), 2);
-			cvLine(image, points[0], points[1], Scalar(0, 0, 255), 2);
-
-			RoadV.push_back(points);
-		}
 		if (k > -1.5&&k < -0.5)			//左车道
 		{
 			lRoadV.push_back(points);
 		}
-		else if (k > 1 && k < 1.5)		//右车道
+		else if (k > 0.5 && k < 1.5)		//右车道
 		{
 			rRoadV.push_back(points);
 		}	
 	}
 	selectRoad(lRoadV, rRoadV);
-	cvLine(image, curRoad[0], curRoad[1], Scalar(255, 0, 255), 4);
-	cvLine(image, curRoad[2], curRoad[3], Scalar(255, 0, 255), 4);
-	cvShowImage("image", image);
-	saveRoadImage(image);
+	//cvLine(image, curRoad[0], curRoad[1], Scalar(255, 0, 255), 4);
+	//cvLine(image, curRoad[2], curRoad[3], Scalar(255, 0, 255), 4);
+	//cvShowImage("image", image);
+	//saveRoadImage(image);
 }
 
 void saveRoadImage(IplImage *image)
@@ -1879,6 +2036,7 @@ void selectRoad(vector<CvPoint*> lRoadV, vector<CvPoint*> rRoadV)
 		curRoad[0] = p[0];
 		curRoad[1] = p[1];
 	}
+	leftRK = 1.0*(curRoad[0].x - curRoad[1].x) / (curRoad[0].y - curRoad[1].y);
 	//【右车道部分】
 	length = rRoadV.size();
 	if (length == 0) 
@@ -1900,6 +2058,7 @@ void selectRoad(vector<CvPoint*> lRoadV, vector<CvPoint*> rRoadV)
 		curRoad[2] = p[0];
 		curRoad[3] = p[1];
 	}
+	rightRK = 1.0*(curRoad[2].x - curRoad[3].x) / (curRoad[2].y - curRoad[3].y);;
 }
 
 void updateRoad()
@@ -1908,6 +2067,205 @@ void updateRoad()
 	{
 		preRoad[i] = curRoad[i];
 	}
+}
+
+float calByGuss(float a, float b, float x)
+{
+	float v = 1 / (a * (sqrt(2.0 * Pi)))*exp(-pow(x - b, 2) / (2 * pow(a, 2)));
+	return v;
+}
+
+int getRoadIndex(float x, float y, float lRK, float rRK, CvPoint * curRoad)
+{
+	float lx = lRK*(y - curRoad[0].y) + curRoad[0].x;
+	float rx = rRK*(y - curRoad[2].y) + curRoad[2].x;
+	if (x < lx)				//左车道左边
+	{ 
+		return 1; 
+	}
+	else if (x > rx)		//右车道右边
+	{ 
+		return 2; 
+	}
+	return 0;				//同一车道
+}
+
+float calObjectAbn(Mat object,float minS,float maxS)
+{
+	//基于光流大小计算基础异常性
+	float s = object.at<float>(0, 5);
+	float baseAbnormality = calObjectBaseAbnormality(s, minS, maxS);
+	cout << "\tbase:" << baseAbnormality;
+	//距离权值
+	float distance = object.at<float>(0, 6);
+	float distanceWeight = calDistanceWeight(distance, 0.5, 0.9);
+	//方向权值
+	int midX = object.at<float>(0, 0) + object.at<float>(0, 2);
+	int midY = object.at<float>(0, 1) + object.at<float>(0, 3);
+	midX = midX >> 1;
+	midY = midY >> 1;
+	float angleWeight = calAngleWeight(
+		midX,
+		midY,
+		object.at<float>(0, 4),
+		object.at<float>(0, 7)
+	);
+	baseAbnormality *= distanceWeight;
+	baseAbnormality *= angleWeight;
+	return baseAbnormality;
+}
+
+float calObjectBaseAbnormality(float size, float minS, float maxS)
+{
+	float ds = maxS - minS;
+	if (abs(ds) < 0.000001) { return 1.0f; }
+	return (size - minS) / ds;
+}
+
+float calDistanceWeight(float distance, float threshold, float f)
+{
+	float pro = 5 * calByGuss(sqrt(5), 0, distance / 10);
+	cout << "\tpro:" << pro;
+	float n = log(2) / (log(2) - log(1 - f));
+	float w = 0.0f;
+	if (abs(pro - threshold) < 0.00001) 
+	{
+		w =  threshold;
+	}
+	else if (pro > threshold) 
+	{
+		w = (1 - threshold)*pow((pro - threshold) / (1 - threshold), n) + threshold;
+	}
+	else 
+	{
+		w = threshold - (threshold - 0)*pow((threshold - pro) / threshold, n);
+	}
+	cout << "\tw:" << w << endl;
+	return w;
+}
+
+float calAngleWeight(float x, float y, int angle, int r)
+{
+	if (r == 0)				//同车道
+	{
+		int Bin14 = Bin / 4;
+		int Bin12 = Bin / 2;
+		int Bin34 = 3 * Bin / 4;
+		int Bin54 = 5 * Bin / 4;
+		float w = 0.0f;
+		if (Bin14 <= angle&&angle <= Bin34 - 1) 
+		{
+			w = (angle - Bin14) / (Bin12 - 1);
+		}
+		else if (Bin34 <= angle&&angle <= Bin) 
+		{
+			w = (Bin54 - angle - 1) / (Bin12 - 1);
+		}
+		else 
+		{
+			w = (Bin14 - angle - 1) / (Bin12 - 1);
+		}
+		return w;
+	}
+	double OVa = calAngle(x, y, ROIW >> 1, ROIH);
+	float PiBin = 2 * Pi / Bin;
+	int OV = OVa / PiBin;	//自车与目标的角度
+	if (r == 1)				//左车道
+	{
+		double lua = calAngle(curRoad[0].x, curRoad[0].y, curRoad[1].x, curRoad[1].y);
+		double lda = calAngle(curRoad[1].x, curRoad[1].y, curRoad[0].x, curRoad[0].y);
+		int lu = lua / PiBin;
+		int ld = lda / PiBin;
+		float w = 0.0f;
+		if (ld < angle&&angle <= OV) 
+		{
+			w = (angle - ld)*1.0 / (OV - ld);
+		}
+		else if (OV < angle&&angle < Bin) 
+		{
+			w = 1.0*(lu + Bin - angle) / (lu + Bin - OV);
+		}
+		else if (0 <= angle&&angle < lu) 
+		{
+			w = 1.0*(lu - angle) / (lu + Bin - OV);
+		}
+		else 
+		{
+			w = 0.0f;
+		}
+		return w;
+	}
+	else				//右车道
+	{
+		float w = 0.0f;
+		double rua = calAngle(curRoad[3].x, curRoad[3].y, curRoad[2].x, curRoad[2].y);
+		double rda = calAngle(curRoad[2].x, curRoad[2].y, curRoad[3].x, curRoad[3].y);
+		int ru = rua / PiBin;
+		int rd = rda / PiBin;
+		if (ru <= angle&&angle <= OV) 
+		{
+			w = 1.0* (angle - ru) / (OV - ru);
+		}
+		else if (OV < angle&&angle <= rd) 
+		{
+			w = 1.0*(angle - OV) / (rd - OV);
+		}
+		else 
+		{
+			w = 0.0f;
+		}
+		return w;
+	}
+}
+
+double calAngle(float x, float y, float x_, float y_)
+{
+	double dx = x_ - x;
+	double dy = y_ - y;
+	double angle = atan2(-dy, dx);
+	angle = fmod(angle + 2 * Pi, 2 * Pi);
+	if (abs(dx - 0) < 0.000001 && abs(dy - 0) < 0.00001)
+	{
+		angle = -1.0;
+	}
+	return angle;
+}
+
+void getAbnormalObjects(vector<Mat> objects, float minFlowSize, float maxFlowSize,Mat &abnormalityMat)
+{
+	int length = objects.size();
+	abnormalityMat = Mat::ones(length, 1, CV_32FC1);//存储每一个object的异常性
+	for (size_t i = 0; i < length; i++)				//遍历每一个目标
+	{
+		Mat object = objects[i];
+		//根据光流大小计算基础异常性
+		float flowSize = object.at<float>(0, 5);
+		float baseAbnormality = calObjectBaseAbnormality(flowSize, minFlowSize, maxFlowSize);
+		//根据三维距离计算距离权值
+		float distance = object.at<float>(0, 6);
+		float distanceWeight = calDistanceWeight(distance, 0.5, 0.9);
+		abnormalityMat.at<float>(i, 0) = baseAbnormality*distanceWeight;
+	}
+	//归一化
+	normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
+	for (size_t i = 0; i < length; i++)
+	{
+		Mat object = objects[i];
+		//方向权值
+		int midX = object.at<float>(0, 0) + object.at<float>(0, 2);//目标中心x
+		int midY = object.at<float>(0, 1) + object.at<float>(0, 3);//目标中心y
+		midX = midX >> 1;
+		midY = midY >> 1;
+		float angleWeight = calAngleWeight(
+			midX,
+			midY,
+			object.at<float>(0, 4),	//光流方向
+			object.at<float>(0, 7)	//所属车道
+		);
+		abnormalityMat.at<float>(i, 0) *= angleWeight;
+	}
+	//归一化
+	//normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
 }
 
 void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector<Point2f>* preV, vector<Point2i>* curV, int N)
