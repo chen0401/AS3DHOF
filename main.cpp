@@ -8,12 +8,12 @@ using namespace cv;
 //【数据集参数】
 const int DATA = 15;
 //【帧-标记】
-const int iStart = 170;			//起始帧
-const int iEnd = 292;			//结束帧
+const int iStart = 165;			//起始帧
+const int iEnd = 185;			//结束帧
 int CI = 0;						//当前帧序号
 //【特征点提取方法相关参数】
-const int Hstep = 10;			//提取特征点H方向步长
-const int Wstep = 10;			//提取特征点W方向步长
+const int Hstep = 5;			//提取特征点H方向步长
+const int Wstep = 5;			//提取特征点W方向步长
 static int WNf;					//W方向的特征点数量
 static int HNf;					//H方向的特征点数量
 
@@ -49,9 +49,13 @@ static int maxH;				//H方向的结束坐标(不包含该点）
 static int ROIW;				//ROI区域的W：maxW-minW
 static int ROIH;
 //【相机参数】
-const double b = 0.54;				//基线（单位m）
-const double f = 4.5;				//焦距(单位mm)  dx = 4.65μm
-const double fx = 963.5594;
+//const double b = 0.54;				//基线（单位m）
+//const double f = 4.5;				//焦距(单位mm)  dx = 4.65μm
+//const double fx = 963.5594;
+const double fx = 820.428;
+const double f = 6.56;
+const double b = 0.308;
+
 //【MMM算法参数】
 const int MLN = 7;				//number of layers
 const int MMN = 4;				//number of motions
@@ -72,8 +76,10 @@ char *outDest = "../output/56/flow/0000000%03d.png";
 char *hofText = "../output/hof/%d-AS3DHOF-%d-%d.txt";
 char *multipleClassDest = "../output/56/multipleObjects/0000000%03d_DB.png";
 
-char *dest = "../input/KITTI/%d/image_00/data/0000000%03d.png";
-char *rightDest = "../input/KITTI/%d/image_01/data/0000000%03d.png";
+//char *dest = "../input/KITTI/%d/image_00/data/0000000%03d.png";
+//char *rightDest = "../input/KITTI/%d/image_01/data/0000000%03d.png";
+char *dest = "../input/Reinhard/Squirrel-left/image0%03d_c0.pgm";
+char *rightDest = "../input/Reinhard/Squirrel-right/image0%03d_c1.pgm";
 char hofSrc[200];
 const bool ifSaveHOF = false;		//是否保存HOF数据
 char outSrc[200];
@@ -473,10 +479,12 @@ int main()
 	for (int i = iStart; i < iEnd; i++)
 	{
 		CI = i + 1;
-		sprintf_s(preSrc, dest, DATA, i);				//DATA：数据集编号  i：帧
-		sprintf_s(curSrc, dest, DATA, CI);
-		sprintf_s(rightCurSrc, rightDest, DATA, CI);
-
+		//sprintf_s(preSrc, dest, DATA, i);				//DATA：数据集编号  i：帧
+		//sprintf_s(curSrc, dest, DATA, CI);
+		//sprintf_s(rightCurSrc, rightDest, DATA, CI);
+		sprintf_s(preSrc, dest, i);
+		sprintf_s(curSrc, dest, CI);
+		sprintf_s(rightCurSrc, rightDest, CI);;
 		preImage = cvLoadImage(preSrc, CV_BGR2GRAY);				//左图：t-1时刻
 		curImage = cvLoadImage(curSrc, 0);				//左图：t时刻
 		rightCurImage = cvLoadImage(rightCurSrc, 0);	//右图：t时刻
@@ -533,8 +541,13 @@ int main()
 			cvInitFont(&font, CV_FONT_HERSHEY_COMPLEX, 0.5, 0.5, 1, 1, 8);
 		
 			float ab = abnormalityMat.at<float>(k, 0);
-			if (ab > -1) 
+
+			if (ab > 0.1) 
 			{
+				char *abt = "%.2f";
+				char abtt[20];
+				sprintf_s(abtt, abt, ab);
+				cvPutText(image,abtt,Point(object.at<float>(0, 0)+10, object.at<float>(0, 1)),&font,Scalar(255,255,255));
 				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255 * ab), -1);
 			}
 		}
@@ -551,10 +564,10 @@ int main()
 		////cvShowImage("前一帧", preImage);
 		cvShowImage("image", image);
 
-		//char *src = "../output/15/目标异常性-光流大小-三维距离-角度/0000000%03d.png";
-		//char dest[200];
-		//sprintf_s(dest, src, CI);
-		//cvSaveImage(dest, image);
+		char *src = "../output/Reinhard/目标异常性-光流大小-三维距离-角度/image0%03d_c0.png";
+		char dest[200];
+		sprintf_s(dest, src, CI);
+		cvSaveImage(dest, image);
 		waitKey(1);
 	}
 
@@ -1433,9 +1446,9 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage, vec
 	//【-------计算视差矩阵-------】
 	Mat disparity;
 	calDisparity(curImage, rightCurImage, disparity);
-	//saveDisparityImage(disparity);
 	//imshow("disparity", disparity);
 	//normalize(disparity,disparity,256,CV_MINMAX);
+	//saveDisparityImage(disparity);
 	//imshow("disparity2", disparity);
 	//【-------计算光流矩阵-------】
 	Mat preFeaturesMat, curFeaturesMat;
@@ -1502,7 +1515,7 @@ int markLayer(float distance)
 
 void saveLayerImage(IplImage * curImage, vector<Point2f>* preV, vector<Point2i>* curV, int LayerN)
 {
-	char * src = "../output/%d/multipleLayer/0000000%03d_%d_layer.png";
+	char * src = "../output/Reinhard/multipleLayers/image0%03d_c0_%d_layer.png";
 	char dest[200];
 	int length = 0;
 	
@@ -1518,7 +1531,7 @@ void saveLayerImage(IplImage * curImage, vector<Point2f>* preV, vector<Point2i>*
 		{
 			drawArrow(temp, pv[j], cv[j], Scalar(255, 255, 255), 2);
 		}
-		sprintf_s(dest, src, DATA, CI, i);
+		sprintf_s(dest, src, CI, i);
 		cvSaveImage(dest, temp);
 	}
 
@@ -1864,9 +1877,9 @@ void saveFlowImage(IplImage * curImage, Mat preFeaturesMat, Mat curFeaturesMat)
 	int length = curFeaturesMat.rows;
 	IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
 	cvCvtColor(curImage, temp, CV_GRAY2BGR);
-	char *src = "../output/%d/flow/0000000%03d_flow.png";
+	char *src = "../output/Reinhard/flow/image0%03d_c0_flow.png";
 	char dest[200];
-	sprintf_s(dest, src, DATA, CI);
+	sprintf_s(dest, src, CI);
 	for (size_t i = 0; i < length; i++)
 	{
 		drawArrow(temp, Point2f(preFeaturesMat.at<float>(i, 0), preFeaturesMat.at<float>(i, 1)), Point2f(curFeaturesMat.at<float>(i, 0), curFeaturesMat.at<float>(i, 1)), Scalar(255, 255, 255), 1);
@@ -1877,20 +1890,20 @@ void saveFlowImage(IplImage * curImage, Mat preFeaturesMat, Mat curFeaturesMat)
 void saveDisparityImage(Mat disparity)
 {
 	char disDes[200];
-	char *disD = "../output/%d/disparity/0000000%03d_disparity.png";
-	sprintf_s(disDes, disD, DATA, CI);
+	char *disD = "../output/Reinhard/disparity/image0%03d_c0_disparity.png";
+	sprintf_s(disDes, disD, CI);
 	imwrite(disDes, disparity);
 }
 
 void saveMotionImage(IplImage *curImage,vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],int LayerN)
 {
-	char *src = "../output/%d/multipleMotion/0000000%03d_%d_motion.png";
+	char *src = "../output/Reinhard/multipleMotions/image0%03d_c0_%d_motion.png";
 	char dest[200];
 	IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
 	for (size_t i = 0; i < LayerN; i++)
 	{
 		cvCvtColor(curImage, temp, CV_GRAY2BGR);
-		sprintf_s(dest, src, DATA, CI, i);
+		sprintf_s(dest, src, CI, i);
 		for (size_t j = 0; j < MMN; j++)
 		{
 			int length = curMV[i][j].size();
@@ -1906,8 +1919,8 @@ void saveMotionImage(IplImage *curImage,vector<Point2f> preMV[][MMN], vector<Poi
 void saveObjectsImage(IplImage * image)
 {
 	char dest[200];
-	char *src = "../output/%d/multipleObjects-56层含motion0/0000000%03d_objects_.png";
-	sprintf_s(dest, src, DATA, CI);
+	char *src = "../output/Reinhard/multipleObjects/image0%03d_c0_objects_.png";
+	sprintf_s(dest, src, CI);
 	cvSaveImage(dest, image);
 }
 
@@ -1950,7 +1963,7 @@ void getRoad(IplImage * curImage)
 {
 	IplImage *temp = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 1);
 	//cvCvtColor(curImage, temp, CV_BGR2GRAY);
-	cvThreshold(curImage, temp, 200, 255.0, CV_THRESH_BINARY);
+	cvThreshold(curImage, temp, 90, 255.0, CV_THRESH_BINARY);		//200
 	cvErode(temp, temp, NULL, 1);
 	cvDilate(temp, temp, NULL, 1);
 	cvCanny(temp, temp, 50, 120);
@@ -2155,15 +2168,15 @@ float calAngleWeight(float x, float y, int angle, int r)
 		float w = 0.0f;
 		if (Bin14 <= angle&&angle <= Bin34 - 1) 
 		{
-			w = (angle - Bin14) / (Bin12 - 1);
+			w = 1.0*(angle - Bin14) / (Bin12 - 1);
 		}
 		else if (Bin34 <= angle&&angle <= Bin) 
 		{
-			w = (Bin54 - angle - 1) / (Bin12 - 1);
+			w = 1.0*(Bin54 - angle - 1) / (Bin12 - 1);
 		}
 		else 
 		{
-			w = (Bin14 - angle - 1) / (Bin12 - 1);
+			w = 1.0*(Bin14 - angle - 1) / (Bin12 - 1);
 		}
 		return w;
 	}
@@ -2265,7 +2278,7 @@ void getAbnormalObjects(vector<Mat> objects, float minFlowSize, float maxFlowSiz
 		abnormalityMat.at<float>(i, 0) *= angleWeight;
 	}
 	//归一化
-	//normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
+	normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
 }
 
 void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector<Point2f>* preV, vector<Point2i>* curV, int N)
