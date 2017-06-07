@@ -8,7 +8,7 @@ using namespace cv;
 //【数据集参数】
 const int DATA = 15;
 //【帧-标记】
-const int iStart = 165;			//起始帧
+const int iStart = 155;			//起始帧
 const int iEnd = 185;			//结束帧
 int CI = 0;						//当前帧序号
 //【特征点提取方法相关参数】
@@ -541,14 +541,16 @@ int main()
 			cvInitFont(&font, CV_FONT_HERSHEY_COMPLEX, 0.5, 0.5, 1, 1, 8);
 		
 			float ab = abnormalityMat.at<float>(k, 0);
-
-			if (ab > 0.1) 
+			float size = object.at<float>(0, 5);
+			float angle = object.at<float>(0, 4);
+			float distance = object.at<float>(0, 6);
+			if (ab>0.1) 
 			{
-				char *abt = "%.2f";
-				char abtt[20];
-				sprintf_s(abtt, abt, ab);
+				char *abt = "%.2f,%.2f,%.2f,%.2f";
+				char abtt[200];
+				sprintf_s(abtt, abt, ab, size, angle, distance);
 				cvPutText(image,abtt,Point(object.at<float>(0, 0)+10, object.at<float>(0, 1)),&font,Scalar(255,255,255));
-				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255 * ab), -1);
+				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255 * ab), 4);
 			}
 		}
 		
@@ -1991,7 +1993,7 @@ void getRoad(IplImage * curImage)
 	{
 		CvPoint *points = (CvPoint*)cvGetSeqElem(lines, i);
 		double k = (points[0].y - points[1].y)*1.0 / (points[0].x - points[1].x);
-		if (k > -1.5&&k < -0.5)			//左车道
+		if (k > -1.5&&k < -0.5)				//左车道
 		{
 			lRoadV.push_back(points);
 		}
@@ -2221,7 +2223,7 @@ float calAngleWeight(float x, float y, int angle, int r)
 		}
 		else if (OV < angle&&angle <= rd) 
 		{
-			w = 1.0*(angle - OV) / (rd - OV);
+			w = 1.0*(rd - angle) / (rd - OV);
 		}
 		else 
 		{
