@@ -8,8 +8,8 @@ using namespace cv;
 //【数据集参数】
 const int DATA = 15;
 //【帧-标记】
-const int iStart = 155;			//起始帧
-const int iEnd = 185;			//结束帧
+const int iStart = 211;			//起始帧
+const int iEnd = 270;			//结束帧
 int CI = 0;						//当前帧序号
 //【特征点提取方法相关参数】
 const int Hstep = 5;			//提取特征点H方向步长
@@ -28,7 +28,7 @@ const int sh = 8;				//滑动窗口H方向移动步长
 const int sw = 8;				//滑动窗口W方向移动步长
 //【光流过滤阈值】
 const float FRT = 1.0;			//正反向光流阈值
-const float MFS = 4.0;			//光流大小阈值
+const float MFS = 2.0;			//光流大小阈值       SafeTurn:2.0   Squirrel:4.0
 //【3DHOF相关参数设置】
 const int VT = 1.5;				//标准差阈值
 const float DT = 0.6f;			//区域3D-HOF离散度（标准差/平均值）阈值
@@ -78,8 +78,8 @@ char *multipleClassDest = "../output/56/multipleObjects/0000000%03d_DB.png";
 
 //char *dest = "../input/KITTI/%d/image_00/data/0000000%03d.png";
 //char *rightDest = "../input/KITTI/%d/image_01/data/0000000%03d.png";
-char *dest = "../input/Reinhard/Squirrel-left/image0%03d_c0.pgm";
-char *rightDest = "../input/Reinhard/Squirrel-right/image0%03d_c1.pgm";
+char *dest = "../input/Reinhard/Safeturn-left/image0%03d_c0.pgm";			//左视图路径
+char *rightDest = "../input/Reinhard/Safeturn-right/image0%03d_c1.pgm";		//右视图路径
 char hofSrc[200];
 const bool ifSaveHOF = false;		//是否保存HOF数据
 char outSrc[200];
@@ -378,7 +378,7 @@ void saveObjectsImage(IplImage *curImage);
 		IplImage *left			//左视图
 		IplImage *rigth			//右视图
 */
-void getUVDisparity(IplImage *left, IplImage *right);
+void getUVDisparity(Mat disparity, Mat &U, Mat &V) ;
 /*
 -功能：车道线检测
 -输入：
@@ -405,7 +405,8 @@ void updateRoad();
 -功能：计算目标的特征向量（起点x，起点y，宽度width，高度height,所属车道index,速度大小，速度方向，距离）
 */
 void calFeaturesOfObjects(Rect object);
-
+void detectRoad(IplImage * curImage);
+void pickRoad(vector<vector<CvPoint> > lvvp, vector<vector<CvPoint> > rvvp);
 float calByGuss(float a,float b,float x);
 /*
 -功能：计算某一点所处的车道标签
@@ -503,8 +504,9 @@ int main()
 
 		//【---------ROI区域参数--------】
 		minW = 0;
-		maxW = imageSize.width;
-		minH = (imageSize.height >> 1) - 40;
+		maxW = imageSize.width;					//长度不便
+		minH = (imageSize.height >> 1) - 80;	//宽度的一半-40    SafeTurn:80   Squirrel:40
+		//minH = 0;
 		//minH = 0;
 		maxH = imageSize.height;
 		ROIW = maxW - minW;
@@ -514,16 +516,27 @@ int main()
 		cvSetImageROI(curImage, cvRect(minW, minH, ROIW, ROIH));
 		cvSetImageROI(rightCurImage, cvRect(minW, minH, ROIW, ROIH));
 		image = cvCreateImage(cvSize(ROIW, ROIH), curImage->depth, 3);
+
+		/*cvCvtColor(rightCurImage, image, CV_GRAY2BGR);
+		cvSaveImage("../output/rightROI.png", image);
+		cvCvtColor(preImage, image, CV_GRAY2BGR);
+		cvSaveImage("../output/preleftROI.png", image);*/
 		cvCvtColor(curImage, image, CV_GRAY2BGR);
+		char *roi = "../output/Reinhard/Safeturn/leftROI/%d_ROI.png";
+		char ro[200];
+		sprintf_s(ro, roi, CI);
+		cvSaveImage(ro,image);
+
 		//【---------检测车道线--------】
-		getRoad(curImage);
+		//getRoad(curImage);
+		detectRoad(curImage);
 		//【---------更新车道线--------】
 		updateRoad();
 		//【---------MMM检测出目标区域--------】
 		vector<Rect> rectV;
 		vector<Mat> objects;
 		float minFlowSize = 9999.0f, maxFlowSize = 0.0f;
-		MMM(preImage, curImage, rightCurImage, objects,minFlowSize, maxFlowSize);
+		MMM(preImage, curImage, rightCurImage, objects, minFlowSize, maxFlowSize);
 		Mat abnormalityMat;
 		getAbnormalObjects(objects, minFlowSize, maxFlowSize, abnormalityMat);
 		//cout << objects.size() << endl;
@@ -544,32 +557,40 @@ int main()
 			float size = object.at<float>(0, 5);
 			float angle = object.at<float>(0, 4);
 			float distance = object.at<float>(0, 6);
-			if (ab>0.1) 
+			if (1) 
 			{
-				char *abt = "%.2f,%.2f,%.2f,%.2f";
+				char *abt = "%.2f";
 				char abtt[200];
-				sprintf_s(abtt, abt, ab, size, angle, distance);
-				cvPutText(image,abtt,Point(object.at<float>(0, 0)+10, object.at<float>(0, 1)),&font,Scalar(255,255,255));
-				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255 * ab), 4);
+				sprintf_s(abtt, abt, ab);
+				//cvPutText(image,abtt,Point(object.at<float>(0, 0)+10, object.at<float>(0, 1)),&font,Scalar(255,255,255));
+				cvRectangle(image, Point(object.at<float>(0, 0), object.at<float>(0, 1)), Point(object.at<float>(0, 2), object.at<float>(0, 3)), Scalar(0, 0, 255), 2);
 			}
 		}
-		
-		double k = 1.0*(curRoad[0].x - curRoad[1].x) / (curRoad[0].y - curRoad[1].y);
-		float x = (80 - curRoad[0].y)*k + curRoad[0].x;
-		float xx = (maxH - curRoad[0].y)*k + curRoad[0].x;
-		cvLine(image, Point(xx, maxH), Point(x, 80), Scalar(0, 255, 0), 2);
-		k = 1.0*(curRoad[2].x - curRoad[3].x) / (curRoad[2].y - curRoad[3].y);
-		x = (80 - curRoad[2].y)*k + curRoad[2].x;
-		xx = (maxH - curRoad[2].y)*k + curRoad[2].x;
-		cvLine(image, Point(xx, maxH), Point(x, 80), Scalar(0, 255, 0), 2);
-		////cvShowImage("当前帧", curImage);
-		////cvShowImage("前一帧", preImage);
-		cvShowImage("image", image);
 
-		char *src = "../output/Reinhard/目标异常性-光流大小-三维距离-角度/image0%03d_c0.png";
+		char *src = "../output/Reinhard/Safeturn/multipleObjects/image0%03d_c0_object.png";
 		char dest[200];
 		sprintf_s(dest, src, CI);
 		cvSaveImage(dest, image);
+
+		int roadY = 100;	//Squirrel:80   SafwTurn:100
+		double k = 1.0*(curRoad[0].x - curRoad[1].x) / (curRoad[0].y - curRoad[1].y);
+		float x = (roadY - curRoad[0].y)*k + curRoad[0].x;
+		float xx = (maxH - curRoad[0].y)*k + curRoad[0].x;
+		cvLine(image, Point(xx, maxH), Point(x, roadY), Scalar(0, 255, 0), 2);
+		k = 1.0*(curRoad[2].x - curRoad[3].x) / (curRoad[2].y - curRoad[3].y);
+		x = (roadY - curRoad[2].y)*k + curRoad[2].x;
+		xx = (maxH - curRoad[2].y)*k + curRoad[2].x;
+		cvLine(image, Point(xx, maxH), Point(x, roadY), Scalar(0, 255, 0), 2);
+		cvShowImage("当前帧", curImage);
+		//////cvShowImage("前一帧", preImage);
+		cvShowImage("image", image);
+		src = "../output/Reinhard/SafeTurn/roadObjects/image0%03d_c0_object.png";
+		sprintf_s(dest, src, CI);
+		cvSaveImage(dest, image);
+		//char *src = "../output/Reinhard/目标异常性-光流大小-三维距离-角度/image0%03d_c0.png";
+		//char dest[200];
+		//sprintf_s(dest, src, CI);
+		//cvSaveImage(dest, image);
 		waitKey(1);
 	}
 
@@ -1448,6 +1469,10 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage, vec
 	//【-------计算视差矩阵-------】
 	Mat disparity;
 	calDisparity(curImage, rightCurImage, disparity);
+	Mat U, V;
+	getUVDisparity(disparity, U, V);
+	imshow("u", U);
+	imshow("v", V);
 	//imshow("disparity", disparity);
 	//normalize(disparity,disparity,256,CV_MINMAX);
 	//saveDisparityImage(disparity);
@@ -1455,17 +1480,17 @@ void MMM(IplImage * preImage, IplImage * curImage, IplImage * rightCurImage, vec
 	//【-------计算光流矩阵-------】
 	Mat preFeaturesMat, curFeaturesMat;
 	calOpticalFlow(preImage, curImage, preFeaturesMat, curFeaturesMat);
-	//saveFlowImage(curImage, preFeaturesMat, curFeaturesMat);
+	saveFlowImage(curImage, preFeaturesMat, curFeaturesMat);
 	//【-------Multiple Layer-------】
 	vector<Point2f> preV[MLN];
 	vector<Point2i> curV[MLN];
 	multipleLayer(disparity, preFeaturesMat, curFeaturesMat, preV, curV, MLN);
-	//saveLayerImage(curImage, preV, curV, MLN);
+	saveLayerImage(curImage, preV, curV, MLN);
 	//【-------Multiple Motion-------】
 	vector<Point2f> preMV[MLN][MMN];
 	vector<Point2i> curMV[MLN][MMN];
 	multipleMotion(preV, curV, MLN, preMV, curMV);
-	//saveMotionImage(curImage, preMV, curMV, MLN);
+	saveMotionImage(curImage, preMV, curMV, MLN);
 	//【-------Multiple class-------】
 	Mat LMC[MLN][MMN];
 	int CMI[MLN][MMN];
@@ -1517,21 +1542,22 @@ int markLayer(float distance)
 
 void saveLayerImage(IplImage * curImage, vector<Point2f>* preV, vector<Point2i>* curV, int LayerN)
 {
-	char * src = "../output/Reinhard/multipleLayers/image0%03d_c0_%d_layer.png";
+	char * src = "../output/Reinhard/Safeturn/multipleLayers/image0%03d_c0_%d_layer.png";
 	char dest[200];
 	int length = 0;
 	
-	IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
+	
 
 	for (size_t i = 0; i < LayerN; i++)
 	{
-		cvCvtColor(curImage, temp, CV_GRAY2BGR);
+		IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
+		//cvCvtColor(curImage, temp, CV_GRAY2BGR);
 		vector<Point2i> cv = curV[i];
 		vector<Point2f> pv = preV[i];
 		length = cv.size();
 		for (size_t j = 0; j < length; j++)
 		{
-			drawArrow(temp, pv[j], cv[j], Scalar(255, 255, 255), 2);
+			drawArrow(temp, pv[j], cv[j], Scalar(0, 0, 0), 2);
 		}
 		sprintf_s(dest, src, CI, i);
 		cvSaveImage(dest, temp);
@@ -1729,13 +1755,13 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 	{
 		double DBR = 11.0;
 		int DBN = 3;
-		if (i < 4)
+		if (i < 3)		//SafeTurn:3    Squirrel:4
 		{
 			DBR = 31.0;
 			DBN = 5;
 		}
 
-		size_t j = i > 4 ? 0 : 1;
+		size_t j = i > 2 ? 0 : 1;//SafeTurn:2   Squirrel:4
 		for (; j < MMN; j++)
 		{
 			vector<int> mask;
@@ -1787,7 +1813,7 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 						minY = y < minY ? y : minY;
 						maxX = x > maxX ? x : maxX;
 						maxY = y > maxY ? y : maxY;
-						cvCircle(image, Point(x, y), 2, scalar[j], 1, 4);
+						//cvCircle(image, Point(x, y), 2, scalar[j], 1, 4);
 						//cout << x << "\t" << y << "\t" << pv[m].x << "\t" << pv[m].y << endl;
 						calFlowSizeAngle(pv[m].x, pv[m].y, x, y, size, angle);//计算角度和大小
 						a = angle / PiBin;
@@ -1863,6 +1889,10 @@ void multipleObjects(vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],
 					object.at<float>(0, 5) = s;
 					object.at<float>(0, 6) = d;
 					object.at<float>(0, 7) = I;
+
+					if (abs(minX - maxX)<100&&abs(maxY - minY) < 50)
+						continue;
+
 					objects.push_back(object);
 
 					minFlowSize = s < minFlowSize ? s : minFlowSize;
@@ -1878,13 +1908,19 @@ void saveFlowImage(IplImage * curImage, Mat preFeaturesMat, Mat curFeaturesMat)
 {
 	int length = curFeaturesMat.rows;
 	IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
-	cvCvtColor(curImage, temp, CV_GRAY2BGR);
-	char *src = "../output/Reinhard/flow/image0%03d_c0_flow.png";
+	//cvCvtColor(curImage, temp, CV_GRAY2BGR);
+	char *src = "../output/Reinhard/Safeturn/flow/image0%03d_c0_flow.png";
 	char dest[200];
 	sprintf_s(dest, src, CI);
 	for (size_t i = 0; i < length; i++)
 	{
-		drawArrow(temp, Point2f(preFeaturesMat.at<float>(i, 0), preFeaturesMat.at<float>(i, 1)), Point2f(curFeaturesMat.at<float>(i, 0), curFeaturesMat.at<float>(i, 1)), Scalar(255, 255, 255), 1);
+		drawArrow(temp,
+			Point2f(preFeaturesMat.at<float>(i, 0), 
+			preFeaturesMat.at<float>(i, 1)),
+			Point2f(curFeaturesMat.at<float>(i, 0),
+			curFeaturesMat.at<float>(i, 1)), 
+			Scalar(0, 0, 0), 
+			1);
 	}
 	cvSaveImage(dest, temp);
 }
@@ -1892,19 +1928,20 @@ void saveFlowImage(IplImage * curImage, Mat preFeaturesMat, Mat curFeaturesMat)
 void saveDisparityImage(Mat disparity)
 {
 	char disDes[200];
-	char *disD = "../output/Reinhard/disparity/image0%03d_c0_disparity.png";
+	char *disD = "../output/Reinhard/Safeturn/disparity/image0%03d_c0_disparity.png";
 	sprintf_s(disDes, disD, CI);
 	imwrite(disDes, disparity);
 }
 
 void saveMotionImage(IplImage *curImage,vector<Point2f> preMV[][MMN], vector<Point2i> curMV[][MMN],int LayerN)
 {
-	char *src = "../output/Reinhard/multipleMotions/image0%03d_c0_%d_motion.png";
+	char *src = "../output/Reinhard/Safeturn/multipleMotions/image0%03d_c0_%d_motion.png";
 	char dest[200];
-	IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
+	
 	for (size_t i = 0; i < LayerN; i++)
 	{
-		cvCvtColor(curImage, temp, CV_GRAY2BGR);
+		IplImage * temp = cvCreateImage(cvGetSize(curImage), curImage->depth, 3);
+		//cvCvtColor(curImage, temp, CV_GRAY2BGR);
 		sprintf_s(dest, src, CI, i);
 		for (size_t j = 0; j < MMN; j++)
 		{
@@ -1915,30 +1952,28 @@ void saveMotionImage(IplImage *curImage,vector<Point2f> preMV[][MMN], vector<Poi
 			}
 			cvSaveImage(dest, temp);
 		}
+
 	}
 }
 
 void saveObjectsImage(IplImage * image)
 {
 	char dest[200];
-	char *src = "../output/Reinhard/multipleObjects/image0%03d_c0_objects_.png";
+	char *src = "../output/Reinhard/Safeturn/multipleObjects/image0%03d_c0_objects_.png";
 	sprintf_s(dest, src, CI);
 	cvSaveImage(dest, image);
 }
 
-void getUVDisparity(IplImage * left, IplImage * right)
+void getUVDisparity(Mat disparity,Mat &U, Mat &V)
 {
-	Mat disparity;
-	calDisparity(left, right, disparity);
-	imshow("disparity", disparity);
 	double max = 0.;
 	minMaxIdx(disparity, NULL, &max);
 	cout << max << endl;
 	int H = disparity.rows;
 	int W = disparity.cols;
 	int M = (int)max + 1;
-	Mat Udisparity = Mat::zeros(M, W, CV_16UC1);
-	Mat Vdisparity = Mat::zeros(H, M, CV_16UC1);
+	U  = Mat::zeros(M, W, CV_16UC1);
+	V = Mat::zeros(H, M, CV_16UC1);
 	int value = 0;
 	for (int i = 0; i < H; i++)
 	{
@@ -1946,26 +1981,22 @@ void getUVDisparity(IplImage * left, IplImage * right)
 		{
 			value = disparity.at<float>(i, j);
 			if (value < 0) { continue; }
-			++Udisparity.at<ushort>(value, j);
-			++Vdisparity.at<ushort>(i, value);
+			++U.at<ushort>(value, j);
+			++V.at<ushort>(i, value);
 		}
 	}
-	for (size_t i = 0; i < M; i++)
-	{
-		for (size_t j = 0; j < W; j++)
-		{
-			Udisparity.at<ushort>(i, j) = Udisparity.at<ushort>(i, j) > 10 ? 255 : 0;
-		}
-	}
-	imshow("Udisparity", Udisparity);
-	imwrite("ud.png",Udisparity);
+	int T = 15;
+	U = 1 ? U > T : U < T;
+	V = 1 ? V > T : U < T;
+	//erode(U, U, Mat());
+	//dilate(U, U, Mat());
 }
 
 void getRoad(IplImage * curImage)
 {
 	IplImage *temp = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 1);
 	//cvCvtColor(curImage, temp, CV_BGR2GRAY);
-	cvThreshold(curImage, temp, 90, 255.0, CV_THRESH_BINARY);		//200
+	cvThreshold(curImage, temp, 120, 255.0, CV_THRESH_BINARY);		//200
 	cvErode(temp, temp, NULL, 1);
 	cvDilate(temp, temp, NULL, 1);
 	cvCanny(temp, temp, 50, 120);
@@ -1987,17 +2018,21 @@ void getRoad(IplImage * curImage)
 
 	//IplImage *image = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 3);
 	//cvCvtColor(curImage, image, CV_GRAY2BGR);
-//	cvCopy(curImage, image);
+	//cvCopy(curImage, image);
 	vector<CvPoint*> RoadV, lRoadV, rRoadV;
 	for (size_t i = 0; i < length; i++)
 	{
 		CvPoint *points = (CvPoint*)cvGetSeqElem(lines, i);
+		cvLine(image, points[0], points[1], cvScalar(0, 255, 255), 1);
+
 		double k = (points[0].y - points[1].y)*1.0 / (points[0].x - points[1].x);
-		if (k > -1.5&&k < -0.5)				//左车道
+		cout << k << endl;
+		if (k > -0.3&&k < -0.1)				//左车道-1.5,-0.5
 		{
+			cvLine(image, points[0], points[1], cvScalar(0, 0, 255), 1);
 			lRoadV.push_back(points);
 		}
-		else if (k > 0.5 && k < 1.5)		//右车道
+		else if (k > 0.1 && k < 0.3)		//右车道0.5,1.5
 		{
 			rRoadV.push_back(points);
 		}	
@@ -2005,7 +2040,7 @@ void getRoad(IplImage * curImage)
 	selectRoad(lRoadV, rRoadV);
 	//cvLine(image, curRoad[0], curRoad[1], Scalar(255, 0, 255), 4);
 	//cvLine(image, curRoad[2], curRoad[3], Scalar(255, 0, 255), 4);
-	//cvShowImage("image", image);
+	
 	//saveRoadImage(image);
 }
 
@@ -2042,7 +2077,7 @@ void selectRoad(vector<CvPoint*> lRoadV, vector<CvPoint*> rRoadV)
 		CvPoint * p = lRoadV[0];
 		for (size_t i = 0; i < length; i++)
 		{
-			if (p[1].x < lRoadV[i][1].x&&lRoadV[i][1].x < (ROIW >> 1))
+			if (p[1].x > lRoadV[i][1].x&&lRoadV[i][1].x < (ROIW >> 1))
 			{
 				p = lRoadV[i];
 			}
@@ -2064,7 +2099,7 @@ void selectRoad(vector<CvPoint*> lRoadV, vector<CvPoint*> rRoadV)
 		CvPoint * p = rRoadV[0];
 		for (size_t i = 0; i < length; i++)
 		{
-			if (p[1].x > rRoadV[i][1].x&&rRoadV[i][1].x > (ROIW >> 1))
+			if (p[1].x < rRoadV[i][1].x&&rRoadV[i][1].x > (ROIW >> 1))
 			{
 				p = rRoadV[i];
 			}
@@ -2082,6 +2117,103 @@ void updateRoad()
 	{
 		preRoad[i] = curRoad[i];
 	}
+}
+
+void detectRoad(IplImage * curImage)
+{
+	IplImage *temp = cvCreateImage(cvGetSize(curImage), IPL_DEPTH_8U, 1);
+	//cvCvtColor(curImage, temp, CV_BGR2GRAY);
+	cvThreshold(curImage, temp, 120, 255.0, CV_THRESH_BINARY);		//200    SafeTurn:120  Squirrel:90
+	cvErode(temp, temp, NULL, 1);
+	cvDilate(temp, temp, NULL, 1);
+	cvCanny(temp, temp, 50, 120);
+	cvShowImage("temp", temp);
+	//霍夫变换
+	CvSeq *lines = NULL;
+
+	CvMemStorage *storage = cvCreateMemStorage(0);
+	lines = cvHoughLines2(
+		temp,
+		storage,
+		CV_HOUGH_PROBABILISTIC,			//method			概率
+		1.0,							//rho
+		CV_PI / 180,					//theta
+		40,								//threshold		像素点个数阈值
+		20,								//param1		最小线段长度
+		10);							//param2		线段的最大间隔
+	int length = lines->total;
+	vector<vector<CvPoint> >lRoadV, rRoadV;
+	for (size_t i = 0; i < length; i++)
+	{
+		CvPoint *points = (CvPoint*)cvGetSeqElem(lines, i);
+		//cvLine(image, points[0], points[1], cvScalar(0, 255, 255), 1);
+
+		double k = (points[0].y - points[1].y)*1.0 / (points[0].x - points[1].x);
+		//cout << k << endl;
+		if (k > -0.3&&k < -0.1)				//左车道-1.5,-0.5      SafeTurn:-0.3~-0.1  Squirrel:-1.5~-0.5
+		{
+			vector<CvPoint> pv;
+			pv.push_back(points[0]);
+			pv.push_back(points[1]);
+			//cvLine(image, points[0], points[1], cvScalar(0, 0, 255), 1);
+			lRoadV.push_back(pv);
+
+		}
+		else if (k > 0.2 && k < 0.5)		//右车道0.5,1.5      SafeTurn:0.2~0.5   Squirrel:0.5~1.5
+		{
+			vector<CvPoint> pv;
+			pv.push_back(points[0]);
+			pv.push_back(points[1]);
+			//cvLine(image, points[0], points[1], cvScalar(0, 0, 255), 1);
+			rRoadV.push_back(pv);
+		}
+	}
+	//selectRoad(lRoadV, rRoadV);
+	pickRoad(lRoadV, rRoadV);
+}
+
+void pickRoad(vector<vector<CvPoint>> lvvp, vector<vector<CvPoint>> rvvp)
+{
+	int length = lvvp.size();
+	if (length == 0) 
+	{
+		curRoad[0] = preRoad[0];
+		curRoad[1] = preRoad[1];
+	}
+	else
+	{
+		int in = 0;
+		for (size_t i = 0; i < length; i++)
+		{
+			if (lvvp[in][0].x < lvvp[i][0].x&&lvvp[in][0].y < lvvp[i][0].y&&lvvp[i][0].x < (ROIW >> 1))
+			{
+				in = i;
+			}
+		}
+		curRoad[0] = lvvp[in][0];
+		curRoad[1] = lvvp[in][1];
+	}
+	leftRK = 1.0*(curRoad[0].x - curRoad[1].x) / (curRoad[0].y - curRoad[1].y);
+	length = rvvp.size();
+	if (length == 0)
+	{
+		curRoad[2] = preRoad[2];
+		curRoad[3] = preRoad[3];
+	}
+	else
+	{
+		int in = 0;
+		for (size_t i = 0; i < length; i++)
+		{
+			if (rvvp[in][0].x < rvvp[i][0].x&&rvvp[in][0].y < rvvp[i][0].y&&rvvp[i][0].x < (ROIW >> 1))
+			{
+				in = i;
+			}
+		}
+		curRoad[2] = rvvp[in][0];
+		curRoad[3] = rvvp[in][1];
+	}
+	rightRK = 1.0*(curRoad[2].x - curRoad[3].x) / (curRoad[2].y - curRoad[3].y);
 }
 
 float calByGuss(float a, float b, float x)
@@ -2140,7 +2272,7 @@ float calObjectBaseAbnormality(float size, float minS, float maxS)
 float calDistanceWeight(float distance, float threshold, float f)
 {
 	float pro = 5 * calByGuss(sqrt(5), 0, distance / 10);
-	cout << "\tpro:" << pro;
+	//cout << "\tpro:" << pro;
 	float n = log(2) / (log(2) - log(1 - f));
 	float w = 0.0f;
 	if (abs(pro - threshold) < 0.00001) 
@@ -2155,7 +2287,7 @@ float calDistanceWeight(float distance, float threshold, float f)
 	{
 		w = threshold - (threshold - 0)*pow((threshold - pro) / threshold, n);
 	}
-	cout << "\tw:" << w << endl;
+	//cout << "\tw:" << w << endl;
 	return w;
 }
 
@@ -2262,7 +2394,7 @@ void getAbnormalObjects(vector<Mat> objects, float minFlowSize, float maxFlowSiz
 		abnormalityMat.at<float>(i, 0) = baseAbnormality*distanceWeight;
 	}
 	//归一化
-	normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
+	normalize(abnormalityMat, abnormalityMat, 1.0, 0.0, NORM_MINMAX);
 	for (size_t i = 0; i < length; i++)
 	{
 		Mat object = objects[i];
@@ -2280,7 +2412,7 @@ void getAbnormalObjects(vector<Mat> objects, float minFlowSize, float maxFlowSiz
 		abnormalityMat.at<float>(i, 0) *= angleWeight;
 	}
 	//归一化
-	normalize(abnormalityMat, abnormalityMat, 1.0, CV_MINMAX);
+	normalize(abnormalityMat, abnormalityMat, 1.0, 0.0, NORM_MINMAX);
 }
 
 void multipleLayer(Mat disparity, Mat preFeaturesMat, Mat curFeaturesMat, vector<Point2f>* preV, vector<Point2i>* curV, int N)
